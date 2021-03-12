@@ -4,11 +4,12 @@
 package mocks
 
 import (
-	github "github.com/google/go-github/github"
-	pegomock "github.com/petergtz/pegomock"
-	models "github.com/runatlantis/atlantis/server/events/models"
 	"reflect"
 	"time"
+
+	github "github.com/google/go-github/v31/github"
+	pegomock "github.com/petergtz/pegomock"
+	models "github.com/runatlantis/atlantis/server/events/models"
 )
 
 type MockGithubPullGetter struct {
@@ -101,11 +102,11 @@ func (c *MockGithubPullGetter_GetPullRequest_OngoingVerification) GetCapturedArg
 func (c *MockGithubPullGetter_GetPullRequest_OngoingVerification) GetAllCapturedArguments() (_param0 []models.Repo, _param1 []int) {
 	params := pegomock.GetGenericMockFrom(c.mock).GetInvocationParams(c.methodInvocations)
 	if len(params) > 0 {
-		_param0 = make([]models.Repo, len(params[0]))
+		_param0 = make([]models.Repo, len(c.methodInvocations))
 		for u, param := range params[0] {
 			_param0[u] = param.(models.Repo)
 		}
-		_param1 = make([]int, len(params[1]))
+		_param1 = make([]int, len(c.methodInvocations))
 		for u, param := range params[1] {
 			_param1[u] = param.(int)
 		}

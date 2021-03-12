@@ -12,15 +12,18 @@ import (
 const MergeableApplyReq = "mergeable"
 const ApprovedApplyReq = "approved"
 const ApplyRequirementsKey = "apply_requirements"
+const PreWorkflowHooksKey = "pre_workflow_hooks"
 const WorkflowKey = "workflow"
+const AllowedWorkflowsKey = "allowed_workflows"
 const AllowedOverridesKey = "allowed_overrides"
 const AllowCustomWorkflowsKey = "allow_custom_workflows"
 const DefaultWorkflowName = "default"
 
 // GlobalCfg is the final parsed version of server-side repo config.
 type GlobalCfg struct {
-	Repos     []Repo
-	Workflows map[string]Workflow
+	Repos      []Repo
+	Workflows  map[string]Workflow
+	PolicySets PolicySets
 }
 
 // Repo is the final parsed version of server-side repo config.
@@ -32,7 +35,9 @@ type Repo struct {
 	// If ID is set then this will be nil.
 	IDRegex              *regexp.Regexp
 	ApplyRequirements    []string
+	PreWorkflowHooks     []*PreWorkflowHook
 	Workflow             *Workflow
+	AllowedWorkflows     []string
 	AllowedOverrides     []string
 	AllowCustomWorkflows *bool
 }
@@ -40,12 +45,20 @@ type Repo struct {
 type MergedProjectCfg struct {
 	ApplyRequirements []string
 	Workflow          Workflow
+	AllowedWorkflows  []string
 	RepoRelDir        string
 	Workspace         string
 	Name              string
 	AutoplanEnabled   bool
 	TerraformVersion  *version.Version
 	RepoCfgVersion    int
+	PolicySets        PolicySets
+}
+
+// PreWorkflowHook is a map of custom run commands to run before workflows.
+type PreWorkflowHook struct {
+	StepName   string
+	RunCommand string
 }
 
 // DefaultApplyStage is the Atlantis default apply stage.
@@ -53,6 +66,18 @@ var DefaultApplyStage = Stage{
 	Steps: []Step{
 		{
 			StepName: "apply",
+		},
+	},
+}
+
+// DefaultPolicyCheckStage is the Atlantis default policy check stage.
+var DefaultPolicyCheckStage = Stage{
+	Steps: []Step{
+		{
+			StepName: "show",
+		},
+		{
+			StepName: "policy_check",
 		},
 	},
 }
@@ -77,14 +102,17 @@ var DefaultPlanStage = Stage{
 // for all repos.
 func NewGlobalCfg(allowRepoCfg bool, mergeableReq bool, approvedReq bool) GlobalCfg {
 	defaultWorkflow := Workflow{
-		Name:  DefaultWorkflowName,
-		Apply: DefaultApplyStage,
-		Plan:  DefaultPlanStage,
+		Name:        DefaultWorkflowName,
+		Apply:       DefaultApplyStage,
+		Plan:        DefaultPlanStage,
+		PolicyCheck: DefaultPolicyCheckStage,
 	}
 	// Must construct slices here instead of using a `var` declaration because
 	// we treat nil slices differently.
 	applyReqs := []string{}
 	allowedOverrides := []string{}
+	allowedWorkflows := []string{}
+	preWorkflowHooks := make([]*PreWorkflowHook, 0)
 	if mergeableReq {
 		applyReqs = append(applyReqs, MergeableApplyReq)
 	}
@@ -92,10 +120,10 @@ func NewGlobalCfg(allowRepoCfg bool, mergeableReq bool, approvedReq bool) Global
 		applyReqs = append(applyReqs, ApprovedApplyReq)
 	}
 
-	allowCustomWorkfows := false
+	allowCustomWorkflows := false
 	if allowRepoCfg {
 		allowedOverrides = []string{ApplyRequirementsKey, WorkflowKey}
-		allowCustomWorkfows = true
+		allowCustomWorkflows = true
 	}
 
 	return GlobalCfg{
@@ -103,9 +131,11 @@ func NewGlobalCfg(allowRepoCfg bool, mergeableReq bool, approvedReq bool) Global
 			{
 				IDRegex:              regexp.MustCompile(".*"),
 				ApplyRequirements:    applyReqs,
+				PreWorkflowHooks:     preWorkflowHooks,
 				Workflow:             &defaultWorkflow,
+				AllowedWorkflows:     allowedWorkflows,
 				AllowedOverrides:     allowedOverrides,
-				AllowCustomWorkflows: &allowCustomWorkfows,
+				AllowCustomWorkflows: &allowCustomWorkflows,
 			},
 		},
 		Workflows: map[string]Workflow{
@@ -180,6 +210,7 @@ func (g GlobalCfg) MergeProjectCfg(log logging.SimpleLogging, repoID string, pro
 		AutoplanEnabled:   proj.Autoplan.Enabled,
 		TerraformVersion:  proj.TerraformVersion,
 		RepoCfgVersion:    rCfg.Version,
+		PolicySets:        g.PolicySets,
 	}
 }
 
@@ -196,12 +227,14 @@ func (g GlobalCfg) DefaultProjCfg(log logging.SimpleLogging, repoID string, repo
 		Name:              "",
 		AutoplanEnabled:   DefaultAutoPlanEnabled,
 		TerraformVersion:  nil,
+		PolicySets:        g.PolicySets,
 	}
 }
 
 // ValidateRepoCfg validates that rCfg for repo with id repoID is valid based
 // on our global config.
 func (g GlobalCfg) ValidateRepoCfg(rCfg RepoCfg, repoID string) error {
+
 	sliceContainsF := func(slc []string, str string) bool {
 		for _, s := range slc {
 			if s == str {
@@ -238,16 +271,16 @@ func (g GlobalCfg) ValidateRepoCfg(rCfg RepoCfg, repoID string) error {
 	}
 
 	// Check custom workflows.
-	var allowCustomWorklows bool
+	var allowCustomWorkflows bool
 	for _, repo := range g.Repos {
 		if repo.IDMatches(repoID) {
 			if repo.AllowCustomWorkflows != nil {
-				allowCustomWorklows = *repo.AllowCustomWorkflows
+				allowCustomWorkflows = *repo.AllowCustomWorkflows
 			}
 		}
 	}
 
-	if len(rCfg.Workflows) > 0 && !allowCustomWorklows {
+	if len(rCfg.Workflows) > 0 && !allowCustomWorkflows {
 		return fmt.Errorf("repo config not allowed to define custom workflows: server-side config needs '%s: true'", AllowCustomWorkflowsKey)
 	}
 
@@ -257,6 +290,34 @@ func (g GlobalCfg) ValidateRepoCfg(rCfg RepoCfg, repoID string) error {
 			name := *p.WorkflowName
 			if !mapContainsF(rCfg.Workflows, name) && !mapContainsF(g.Workflows, name) {
 				return fmt.Errorf("workflow %q is not defined anywhere", name)
+			}
+		}
+	}
+
+	// Check workflow is allowed
+	var allowedWorkflows []string
+	for _, repo := range g.Repos {
+		if repo.IDMatches(repoID) {
+
+			if repo.AllowedWorkflows != nil {
+				allowedWorkflows = repo.AllowedWorkflows
+			}
+		}
+	}
+
+	for _, p := range rCfg.Projects {
+		// default is always allowed
+		if p.WorkflowName != nil && len(allowedWorkflows) != 0 {
+			name := *p.WorkflowName
+			if allowCustomWorkflows {
+				// If we allow CustomWorkflows we need to check that workflow name is defined inside repo and not global.
+				if mapContainsF(rCfg.Workflows, name) {
+					break
+				}
+			}
+
+			if !sliceContainsF(allowedWorkflows, name) {
+				return fmt.Errorf("workflow '%s' is not allowed for this repo", name)
 			}
 		}
 	}
@@ -287,7 +348,7 @@ func (g GlobalCfg) getMatchingCfg(log logging.SimpleLogging, repoID string) (app
 		return fmt.Sprintf("setting %s: %s from %s", key, valStr, from)
 	}
 
-	for _, key := range []string{ApplyRequirementsKey, WorkflowKey, AllowedOverridesKey, AllowCustomWorkflowsKey} {
+	for _, key := range []string{ApplyRequirementsKey, WorkflowKey, AllowedOverridesKey, AllowCustomWorkflowsKey, PreWorkflowHooksKey} {
 		for i, repo := range g.Repos {
 			if repo.IDMatches(repoID) {
 				switch key {

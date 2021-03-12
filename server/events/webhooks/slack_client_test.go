@@ -32,14 +32,14 @@ var client webhooks.DefaultSlackClient
 var result webhooks.ApplyResult
 
 func TestAuthTest_Success(t *testing.T) {
-	t.Log("When the underylying client succeeds, function should succeed")
+	t.Log("When the underlying client succeeds, function should succeed")
 	setup(t)
 	err := client.AuthTest()
 	Ok(t, err)
 }
 
 func TestAuthTest_Error(t *testing.T) {
-	t.Log("When the underylying slack client errors, an error should be returned")
+	t.Log("When the underlying slack client errors, an error should be returned")
 	setup(t)
 	When(underlying.AuthTest()).ThenReturn(nil, errors.New(""))
 	err := client.AuthTest()
@@ -61,7 +61,8 @@ func TestTokenIsSet(t *testing.T) {
 func TestChannelExists_False(t *testing.T) {
 	t.Log("When the slack channel doesn't exist, function should return false")
 	setup(t)
-	When(underlying.GetChannels(true)).ThenReturn(nil, nil)
+	When(underlying.GetConversations(new(slack.GetConversationsParameters))).ThenReturn(nil, "xyz", nil)
+	When(underlying.GetConversations(&slack.GetConversationsParameters{Cursor: "xyz"})).ThenReturn(nil, "", nil)
 	exists, err := client.ChannelExists("somechannel")
 	Ok(t, err)
 	Equals(t, false, exists)
@@ -74,7 +75,8 @@ func TestChannelExists_True(t *testing.T) {
 	var channel slack.Channel
 	err := json.Unmarshal([]byte(channelJSON), &channel)
 	Ok(t, err)
-	When(underlying.GetChannels(true)).ThenReturn([]slack.Channel{channel}, nil)
+	When(underlying.GetConversations(new(slack.GetConversationsParameters))).ThenReturn(nil, "xyz", nil)
+	When(underlying.GetConversations(&slack.GetConversationsParameters{Cursor: "xyz"})).ThenReturn([]slack.Channel{channel}, "", nil)
 
 	exists, err := client.ChannelExists("existingchannel")
 	Ok(t, err)
@@ -82,9 +84,10 @@ func TestChannelExists_True(t *testing.T) {
 }
 
 func TestChannelExists_Error(t *testing.T) {
-	t.Log("When the underylying slack client errors, an error should be returned")
+	t.Log("When the underlying slack client errors, an error should be returned")
 	setup(t)
-	When(underlying.GetChannels(true)).ThenReturn(nil, errors.New(""))
+	When(underlying.GetConversations(new(slack.GetConversationsParameters))).ThenReturn(nil, "xyz", nil)
+	When(underlying.GetConversations(&slack.GetConversationsParameters{Cursor: "xyz"})).ThenReturn(nil, "", errors.New(""))
 
 	_, err := client.ChannelExists("anychannel")
 	Assert(t, err != nil, "expected error")
@@ -116,7 +119,7 @@ func TestPostMessage_Success(t *testing.T) {
 			},
 		},
 	}}
-	expParams.AsUser = false
+	expParams.AsUser = true
 	expParams.EscapeText = false
 
 	channel := "somechannel"
@@ -135,7 +138,7 @@ func TestPostMessage_Success(t *testing.T) {
 }
 
 func TestPostMessage_Error(t *testing.T) {
-	t.Log("When the underylying slack client errors, an error should be returned")
+	t.Log("When the underlying slack client errors, an error should be returned")
 	setup(t)
 
 	expParams := slack.NewPostMessageParameters()
@@ -160,7 +163,7 @@ func TestPostMessage_Error(t *testing.T) {
 			},
 		},
 	}}
-	expParams.AsUser = false
+	expParams.AsUser = true
 	expParams.EscapeText = false
 
 	channel := "somechannel"

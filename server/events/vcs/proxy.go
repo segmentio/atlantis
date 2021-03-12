@@ -25,7 +25,7 @@ type ClientProxy struct {
 	clients map[models.VCSHostType]Client
 }
 
-func NewClientProxy(githubClient Client, gitlabClient Client, bitbucketCloudClient Client, bitbucketServerClient Client) *ClientProxy {
+func NewClientProxy(githubClient Client, gitlabClient Client, bitbucketCloudClient Client, bitbucketServerClient Client, azuredevopsClient Client) *ClientProxy {
 	if githubClient == nil {
 		githubClient = &NotConfiguredVCSClient{}
 	}
@@ -38,12 +38,16 @@ func NewClientProxy(githubClient Client, gitlabClient Client, bitbucketCloudClie
 	if bitbucketServerClient == nil {
 		bitbucketServerClient = &NotConfiguredVCSClient{}
 	}
+	if azuredevopsClient == nil {
+		azuredevopsClient = &NotConfiguredVCSClient{}
+	}
 	return &ClientProxy{
 		clients: map[models.VCSHostType]Client{
 			models.Github:          githubClient,
 			models.Gitlab:          gitlabClient,
 			models.BitbucketCloud:  bitbucketCloudClient,
 			models.BitbucketServer: bitbucketServerClient,
+			models.AzureDevops:     azuredevopsClient,
 		},
 	}
 }
@@ -52,8 +56,12 @@ func (d *ClientProxy) GetModifiedFiles(repo models.Repo, pull models.PullRequest
 	return d.clients[repo.VCSHost.Type].GetModifiedFiles(repo, pull)
 }
 
-func (d *ClientProxy) CreateComment(repo models.Repo, pullNum int, comment string) error {
-	return d.clients[repo.VCSHost.Type].CreateComment(repo, pullNum, comment)
+func (d *ClientProxy) CreateComment(repo models.Repo, pullNum int, comment string, command string) error {
+	return d.clients[repo.VCSHost.Type].CreateComment(repo, pullNum, comment, command)
+}
+
+func (d *ClientProxy) HidePrevPlanComments(repo models.Repo, pullNum int) error {
+	return d.clients[repo.VCSHost.Type].HidePrevPlanComments(repo, pullNum)
 }
 
 func (d *ClientProxy) PullIsApproved(repo models.Repo, pull models.PullRequest) (bool, error) {
@@ -70,4 +78,16 @@ func (d *ClientProxy) UpdateStatus(repo models.Repo, pull models.PullRequest, st
 
 func (d *ClientProxy) MergePull(pull models.PullRequest) error {
 	return d.clients[pull.BaseRepo.VCSHost.Type].MergePull(pull)
+}
+
+func (d *ClientProxy) MarkdownPullLink(pull models.PullRequest) (string, error) {
+	return d.clients[pull.BaseRepo.VCSHost.Type].MarkdownPullLink(pull)
+}
+
+func (d *ClientProxy) DownloadRepoConfigFile(pull models.PullRequest) (bool, []byte, error) {
+	return d.clients[pull.BaseRepo.VCSHost.Type].DownloadRepoConfigFile(pull)
+}
+
+func (d *ClientProxy) SupportsSingleFileDownload(repo models.Repo) bool {
+	return d.clients[repo.VCSHost.Type].SupportsSingleFileDownload(repo)
 }

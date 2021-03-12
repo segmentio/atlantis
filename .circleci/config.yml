@@ -1,7 +1,6 @@
 version: 2
 jobs:
   test:
-    working_directory: /go/src/github.com/runatlantis/atlantis
     docker:
       - image: runatlantis/testing-env:latest
     steps:

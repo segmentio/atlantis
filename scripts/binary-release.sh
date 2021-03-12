@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # define architecture we want to build
-XC_ARCH=${XC_ARCH:-"386 amd64 arm"}
+XC_ARCH=${XC_ARCH:-"386 amd64 arm arm64"}
 XC_OS=${XC_OS:-linux darwin}
-XC_EXCLUDE_OSARCH="!darwin/arm !darwin/386"
+XC_EXCLUDE_OSARCH="!darwin/arm !darwin/386 !darwin/arm64"
 
 # clean up
 echo "-> running clean up...."
@@ -11,7 +11,13 @@ rm -rf output/*
 
 if ! which gox > /dev/null; then
     echo "-> installing gox..."
+    # Need to run go get in a separate dir
+    # so it doesn't modify our go.mod.
+    SRC_DIR=$(pwd)
+    cd $(mktemp -d)
+    go mod init example.com/m
     go get -u github.com/mitchellh/gox
+    cd "$SRC_DIR"
 fi
 
 # build

@@ -21,10 +21,10 @@ import (
 
 	"github.com/runatlantis/atlantis/server/events/db"
 
-	"github.com/boltdb/bolt"
 	"github.com/pkg/errors"
 	"github.com/runatlantis/atlantis/server/events/models"
 	. "github.com/runatlantis/atlantis/testing"
+	bolt "go.etcd.io/bbolt"
 )
 
 var lockBucket = "bucket"
@@ -393,7 +393,7 @@ func TestPullStatus_UpdateGet(t *testing.T) {
 	maybeStatus, err := b.GetPullStatus(pull)
 	Ok(t, err)
 	Assert(t, maybeStatus != nil, "exp non-nil")
-	Equals(t, pull, maybeStatus.Pull)
+	Equals(t, pull, maybeStatus.Pull) // nolint: staticcheck
 	Equals(t, []models.ProjectStatus{
 		{
 			Workspace:   "default",
@@ -449,10 +449,10 @@ func TestPullStatus_UpdateDeleteGet(t *testing.T) {
 	Assert(t, maybeStatus == nil, "exp nil")
 }
 
-// Test we can create a status, delete a specific project's status within that
+// Test we can create a status, update a specific project's status within that
 // pull status, and when we get all the project statuses, that specific project
-// should not be there.
-func TestPullStatus_UpdateDeleteProject(t *testing.T) {
+// should be updated.
+func TestPullStatus_UpdateProject(t *testing.T) {
 	b, cleanup := newTestDB2(t)
 	defer cleanup()
 
@@ -492,21 +492,27 @@ func TestPullStatus_UpdateDeleteProject(t *testing.T) {
 		})
 	Ok(t, err)
 
-	err = b.DeleteProjectStatus(pull, "default", ".")
+	err = b.UpdateProjectStatus(pull, "default", ".", models.DiscardedPlanStatus)
 	Ok(t, err)
 
 	status, err := b.GetPullStatus(pull)
 	Ok(t, err)
 	Assert(t, status != nil, "exp non-nil")
-	Equals(t, pull, status.Pull)
+	Equals(t, pull, status.Pull) // nolint: staticcheck
 	Equals(t, []models.ProjectStatus{
+		{
+			Workspace:   "default",
+			RepoRelDir:  ".",
+			ProjectName: "",
+			Status:      models.DiscardedPlanStatus,
+		},
 		{
 			Workspace:   "staging",
 			RepoRelDir:  ".",
 			ProjectName: "",
 			Status:      models.AppliedPlanStatus,
 		},
-	}, status.Projects)
+	}, status.Projects) // nolint: staticcheck
 }
 
 // Test that if we update an existing pull status and our new status is for a

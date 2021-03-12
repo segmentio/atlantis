@@ -2,7 +2,7 @@
 
 ::: tip NOTE
 Terraform Enterprise was [recently renamed](https://www.hashicorp.com/blog/introducing-terraform-cloud-remote-state-management) Terraform Cloud
-and Private Terraform Enteprise was renamed Terraform Enterprise.
+and Private Terraform Enterprise was renamed Terraform Enterprise.
 :::
 
 Atlantis integrates seamlessly with Terraform Cloud and Terraform Enterprise, whether you're using:
@@ -15,7 +15,7 @@ Read the docs below :point_down: depending on your use-case.
 
 ## Using Atlantis With Free Remote State Storage
 To use Atlantis with Free Remote State Storage, you need to:
-1. Migrate your state to Terraform Cloud. See [Getting Started with the Terraform Cloud Free Tier](https://www.terraform.io/docs/enterprise/free/index.html#enable-remote-state-in-terraform-configurations)
+1. Migrate your state to Terraform Cloud. See [Migrating State from Local Terraform](https://www.terraform.io/docs/cloud/migrate/index.html)
 1. Update any projects that are referencing the state you migrated to use the new location
 1. [Generate a Terraform Cloud/Enterprise Token](#generating-a-terraform-cloud-enterprise-token)
 1. [Pass the token to Atlantis](#passing-the-token-to-atlantis)
@@ -41,7 +41,7 @@ Using Atlantis with Terraform Cloud or Terraform Enterprise gives you access to 
 
 ### Getting Started
 To use Atlantis with Terraform Cloud Remote Operations or Terraform Enterprise, you need to:
-1. Migrate your state to Terraform Cloud/Enterprise. See [Migrating State from Terraform Open Source](https://www.terraform.io/docs/enterprise/migrate/index.html)
+1. Migrate your state to Terraform Cloud/Enterprise. See [Migrating State from Local Terraform](https://www.terraform.io/docs/cloud/migrate/index.html)
 1. Update any projects that are referencing the state you migrated to use the new location
 1. [Generate a Terraform Cloud/Enterprise Token](#generating-a-terraform-cloud-enterprise-token)
 1. [Pass the token to Atlantis](#passing-the-token-to-atlantis)
@@ -52,11 +52,14 @@ Using a **Team Token is recommended**, however you can also use a User Token.
 
 ### Team Token
 To generate a team token, click on **Settings** in the top bar, then **Teams** in
-the sidebar, then scroll down to **Team API Token**.
+the sidebar.
+Choose an existing team or create a new one.
+Enable the **Manage Workspaces** permission, then scroll down to **Team API Token**.
 
 ### User Token
 To generate a user token, click on your avatar, then **User Settings**, then
 **Tokens** in the sidebar.
+Ensure the **Manage Workspaces** permission is enabled for this user's team.
 
 ## Passing The Token To Atlantis
 The token can be passed to Atlantis via the `ATLANTIS_TFE_TOKEN` environment variable.

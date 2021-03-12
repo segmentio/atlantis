@@ -44,6 +44,13 @@ func TestRenderErr(t *testing.T) {
 			err,
 			"**Plan Error**\n```\nerr\n```\n",
 		},
+		{
+			"policy check error",
+			models.PolicyCheckCommand,
+			err,
+			"**Policy Check Error**\n```\nerr\n```" +
+				"\n* :heavy_check_mark: To **approve** failing policies either request an approval from approvers or address the failure by modifying the codebase.\n\n",
+		},
 	}
 
 	r := events.MarkdownRenderer{}
@@ -82,6 +89,12 @@ func TestRenderFailure(t *testing.T) {
 			models.PlanCommand,
 			"failure",
 			"**Plan Failed**: failure\n",
+		},
+		{
+			"policy check failure",
+			models.PolicyCheckCommand,
+			"failure",
+			"**Policy Check Failed**: failure\n",
 		},
 	}
 
@@ -159,6 +172,46 @@ $$$
 ---
 * :fast_forward: To **apply** all unapplied plans from this pull request, comment:
     * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
+`,
+		},
+		{
+			"single successful plan with master ahead",
+			models.PlanCommand,
+			[]models.ProjectResult{
+				{
+					PlanSuccess: &models.PlanSuccess{
+						TerraformOutput: "terraform-output",
+						LockURL:         "lock-url",
+						RePlanCmd:       "atlantis plan -d path -w workspace",
+						ApplyCmd:        "atlantis apply -d path -w workspace",
+						HasDiverged:     true,
+					},
+					Workspace:  "workspace",
+					RepoRelDir: "path",
+				},
+			},
+			models.Github,
+			`Ran Plan for dir: $path$ workspace: $workspace$
+
+$$$diff
+terraform-output
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $atlantis apply -d path -w workspace$
+* :put_litter_in_its_place: To **delete** this plan click [here](lock-url)
+* :repeat: To **plan** this project again, comment:
+    * $atlantis plan -d path -w workspace$
+
+:warning: The branch we're merging into is ahead, it is recommended to pull new commits first.
+
+---
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
 `,
 		},
 		{
@@ -193,6 +246,44 @@ $$$
 ---
 * :fast_forward: To **apply** all unapplied plans from this pull request, comment:
     * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
+`,
+		},
+		{
+			"single successful policy check with project name",
+			models.PolicyCheckCommand,
+			[]models.ProjectResult{
+				{
+					PolicyCheckSuccess: &models.PolicyCheckSuccess{
+						PolicyCheckOutput: "2 tests, 1 passed, 0 warnings, 0 failure, 0 exceptions",
+						LockURL:           "lock-url",
+						RePlanCmd:         "atlantis plan -d path -w workspace",
+						ApplyCmd:          "atlantis apply -d path -w workspace",
+					},
+					Workspace:   "workspace",
+					RepoRelDir:  "path",
+					ProjectName: "projectname",
+				},
+			},
+			models.Github,
+			`Ran Policy Check for project: $projectname$ dir: $path$ workspace: $workspace$
+
+$$$diff
+2 tests, 1 passed, 0 warnings, 0 failure, 0 exceptions
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $atlantis apply -d path -w workspace$
+* :put_litter_in_its_place: To **delete** this plan click [here](lock-url)
+* :repeat: To re-run policies **plan** this project again by commenting:
+    * $atlantis plan -d path -w workspace$
+
+---
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
 `,
 		},
 		{
@@ -292,6 +383,70 @@ $$$
 ---
 * :fast_forward: To **apply** all unapplied plans from this pull request, comment:
     * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
+`,
+		},
+		{
+			"multiple successful policy checks",
+			models.PolicyCheckCommand,
+			[]models.ProjectResult{
+				{
+					Workspace:  "workspace",
+					RepoRelDir: "path",
+					PolicyCheckSuccess: &models.PolicyCheckSuccess{
+						PolicyCheckOutput: "4 tests, 4 passed, 0 warnings, 0 failures, 0 exceptions",
+						LockURL:           "lock-url",
+						ApplyCmd:          "atlantis apply -d path -w workspace",
+						RePlanCmd:         "atlantis plan -d path -w workspace",
+					},
+				},
+				{
+					Workspace:   "workspace",
+					RepoRelDir:  "path2",
+					ProjectName: "projectname",
+					PolicyCheckSuccess: &models.PolicyCheckSuccess{
+						PolicyCheckOutput: "4 tests, 4 passed, 0 warnings, 0 failures, 0 exceptions",
+						LockURL:           "lock-url2",
+						ApplyCmd:          "atlantis apply -d path2 -w workspace",
+						RePlanCmd:         "atlantis plan -d path2 -w workspace",
+					},
+				},
+			},
+			models.Github,
+			`Ran Policy Check for 2 projects:
+
+1. dir: $path$ workspace: $workspace$
+1. project: $projectname$ dir: $path2$ workspace: $workspace$
+
+### 1. dir: $path$ workspace: $workspace$
+$$$diff
+4 tests, 4 passed, 0 warnings, 0 failures, 0 exceptions
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $atlantis apply -d path -w workspace$
+* :put_litter_in_its_place: To **delete** this plan click [here](lock-url)
+* :repeat: To re-run policies **plan** this project again by commenting:
+    * $atlantis plan -d path -w workspace$
+
+---
+### 2. project: $projectname$ dir: $path2$ workspace: $workspace$
+$$$diff
+4 tests, 4 passed, 0 warnings, 0 failures, 0 exceptions
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $atlantis apply -d path2 -w workspace$
+* :put_litter_in_its_place: To **delete** this plan click [here](lock-url2)
+* :repeat: To re-run policies **plan** this project again by commenting:
+    * $atlantis plan -d path2 -w workspace$
+
+---
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
 `,
 		},
 		{
@@ -426,6 +581,72 @@ $$$
 ---
 * :fast_forward: To **apply** all unapplied plans from this pull request, comment:
     * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
+`,
+		},
+		{
+			"successful, failed, and errored policy check",
+			models.PolicyCheckCommand,
+			[]models.ProjectResult{
+				{
+					Workspace:  "workspace",
+					RepoRelDir: "path",
+					PolicyCheckSuccess: &models.PolicyCheckSuccess{
+						PolicyCheckOutput: "4 tests, 4 passed, 0 warnings, 0 failures, 0 exceptions",
+						LockURL:           "lock-url",
+						ApplyCmd:          "atlantis apply -d path -w workspace",
+						RePlanCmd:         "atlantis plan -d path -w workspace",
+					},
+				},
+				{
+					Workspace:  "workspace",
+					RepoRelDir: "path2",
+					Failure:    "failure",
+				},
+				{
+					Workspace:   "workspace",
+					RepoRelDir:  "path3",
+					ProjectName: "projectname",
+					Error:       errors.New("error"),
+				},
+			},
+			models.Github,
+			`Ran Policy Check for 3 projects:
+
+1. dir: $path$ workspace: $workspace$
+1. dir: $path2$ workspace: $workspace$
+1. project: $projectname$ dir: $path3$ workspace: $workspace$
+
+### 1. dir: $path$ workspace: $workspace$
+$$$diff
+4 tests, 4 passed, 0 warnings, 0 failures, 0 exceptions
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $atlantis apply -d path -w workspace$
+* :put_litter_in_its_place: To **delete** this plan click [here](lock-url)
+* :repeat: To re-run policies **plan** this project again by commenting:
+    * $atlantis plan -d path -w workspace$
+
+---
+### 2. dir: $path2$ workspace: $workspace$
+**Policy Check Failed**: failure
+
+---
+### 3. project: $projectname$ dir: $path3$ workspace: $workspace$
+**Policy Check Error**
+$$$
+error
+$$$
+* :heavy_check_mark: To **approve** failing policies either request an approval from approvers or address the failure by modifying the codebase.
+
+
+---
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
 `,
 		},
 		{
@@ -698,6 +919,170 @@ $$$
 	}
 }
 
+// Test that if disable apply is set then the apply  footer is not added
+func TestRenderProjectResultsDisableApply(t *testing.T) {
+	cases := []struct {
+		Description    string
+		Command        models.CommandName
+		ProjectResults []models.ProjectResult
+		VCSHost        models.VCSHostType
+		Expected       string
+	}{
+		{
+			"single successful plan with disable apply set",
+			models.PlanCommand,
+			[]models.ProjectResult{
+				{
+					PlanSuccess: &models.PlanSuccess{
+						TerraformOutput: "terraform-output",
+						LockURL:         "lock-url",
+						RePlanCmd:       "atlantis plan -d path -w workspace",
+						ApplyCmd:        "atlantis apply -d path -w workspace",
+					},
+					Workspace:  "workspace",
+					RepoRelDir: "path",
+				},
+			},
+			models.Github,
+			`Ran Plan for dir: $path$ workspace: $workspace$
+
+$$$diff
+terraform-output
+$$$
+
+* :put_litter_in_its_place: To **delete** this plan click [here](lock-url)
+* :repeat: To **plan** this project again, comment:
+    * $atlantis plan -d path -w workspace$
+
+
+`,
+		},
+		{
+			"single successful plan with project name with disable apply set",
+			models.PlanCommand,
+			[]models.ProjectResult{
+				{
+					PlanSuccess: &models.PlanSuccess{
+						TerraformOutput: "terraform-output",
+						LockURL:         "lock-url",
+						RePlanCmd:       "atlantis plan -d path -w workspace",
+						ApplyCmd:        "atlantis apply -d path -w workspace",
+					},
+					Workspace:   "workspace",
+					RepoRelDir:  "path",
+					ProjectName: "projectname",
+				},
+			},
+			models.Github,
+			`Ran Plan for project: $projectname$ dir: $path$ workspace: $workspace$
+
+$$$diff
+terraform-output
+$$$
+
+* :put_litter_in_its_place: To **delete** this plan click [here](lock-url)
+* :repeat: To **plan** this project again, comment:
+    * $atlantis plan -d path -w workspace$
+
+
+`,
+		},
+		{
+			"multiple successful plans, disable apply set",
+			models.PlanCommand,
+			[]models.ProjectResult{
+				{
+					Workspace:  "workspace",
+					RepoRelDir: "path",
+					PlanSuccess: &models.PlanSuccess{
+						TerraformOutput: "terraform-output",
+						LockURL:         "lock-url",
+						ApplyCmd:        "atlantis apply -d path -w workspace",
+						RePlanCmd:       "atlantis plan -d path -w workspace",
+					},
+				},
+				{
+					Workspace:   "workspace",
+					RepoRelDir:  "path2",
+					ProjectName: "projectname",
+					PlanSuccess: &models.PlanSuccess{
+						TerraformOutput: "terraform-output2",
+						LockURL:         "lock-url2",
+						ApplyCmd:        "atlantis apply -d path2 -w workspace",
+						RePlanCmd:       "atlantis plan -d path2 -w workspace",
+					},
+				},
+			},
+			models.Github,
+			`Ran Plan for 2 projects:
+
+1. dir: $path$ workspace: $workspace$
+1. project: $projectname$ dir: $path2$ workspace: $workspace$
+
+### 1. dir: $path$ workspace: $workspace$
+$$$diff
+terraform-output
+$$$
+
+* :put_litter_in_its_place: To **delete** this plan click [here](lock-url)
+* :repeat: To **plan** this project again, comment:
+    * $atlantis plan -d path -w workspace$
+
+### 2. project: $projectname$ dir: $path2$ workspace: $workspace$
+$$$diff
+terraform-output2
+$$$
+
+* :put_litter_in_its_place: To **delete** this plan click [here](lock-url2)
+* :repeat: To **plan** this project again, comment:
+    * $atlantis plan -d path2 -w workspace$
+
+
+`,
+		},
+	}
+	r := events.MarkdownRenderer{
+		DisableApplyAll: true,
+		DisableApply:    true,
+	}
+	for _, c := range cases {
+		t.Run(c.Description, func(t *testing.T) {
+			res := events.CommandResult{
+				ProjectResults: c.ProjectResults,
+			}
+			for _, verbose := range []bool{true, false} {
+				t.Run(c.Description, func(t *testing.T) {
+					s := r.Render(res, c.Command, "log", verbose, c.VCSHost)
+					expWithBackticks := strings.Replace(c.Expected, "$", "`", -1)
+					if !verbose {
+						Equals(t, expWithBackticks, s)
+					} else {
+						Equals(t, expWithBackticks+"<details><summary>Log</summary>\n  <p>\n\n```\nlog```\n</p></details>\n", s)
+					}
+				})
+			}
+		})
+	}
+}
+
+// Test that if folding is disabled that it's not used.
+func TestRenderProjectResults_DisableFolding(t *testing.T) {
+	mr := events.MarkdownRenderer{
+		DisableMarkdownFolding: true,
+	}
+
+	rendered := mr.Render(events.CommandResult{
+		ProjectResults: []models.ProjectResult{
+			{
+				RepoRelDir: ".",
+				Workspace:  "default",
+				Error:      errors.New(strings.Repeat("line\n", 13)),
+			},
+		},
+	}, models.PlanCommand, "log", false, models.Github)
+	Equals(t, false, strings.Contains(rendered, "<details>"))
+}
+
 // Test that if the output is longer than 12 lines, it gets wrapped on the right
 // VCS hosts during an error.
 func TestRenderProjectResults_WrappedErr(t *testing.T) {
@@ -928,6 +1313,8 @@ $$$
 ---
 * :fast_forward: To **apply** all unapplied plans from this pull request, comment:
     * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
 `
 						} else {
 							exp = `Ran Plan for dir: $.$ workspace: $default$
@@ -945,6 +1332,8 @@ $$$
 ---
 * :fast_forward: To **apply** all unapplied plans from this pull request, comment:
     * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
 `
 						}
 					case models.ApplyCommand:
@@ -1087,6 +1476,8 @@ $$$
 ---
 * :fast_forward: To **apply** all unapplied plans from this pull request, comment:
     * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
 `
 	expWithBackticks := strings.Replace(exp, "$", "`", -1)
 	Equals(t, expWithBackticks, rendered)
@@ -1197,6 +1588,480 @@ This plan was not saved because one or more projects failed and automerge requir
 			rendered := mr.Render(c.cr, models.PlanCommand, "log", false, models.Github)
 			expWithBackticks := strings.Replace(c.exp, "$", "`", -1)
 			Equals(t, expWithBackticks, rendered)
+		})
+	}
+}
+
+// test that id repo locking is disabled the link to unlock the project is not rendered
+func TestRenderProjectResultsWithRepoLockingDisabled(t *testing.T) {
+	cases := []struct {
+		Description    string
+		Command        models.CommandName
+		ProjectResults []models.ProjectResult
+		VCSHost        models.VCSHostType
+		Expected       string
+	}{
+		{
+			"no projects",
+			models.PlanCommand,
+			[]models.ProjectResult{},
+			models.Github,
+			"Ran Plan for 0 projects:\n\n\n\n",
+		},
+		{
+			"single successful plan",
+			models.PlanCommand,
+			[]models.ProjectResult{
+				{
+					PlanSuccess: &models.PlanSuccess{
+						TerraformOutput: "terraform-output",
+						LockURL:         "lock-url",
+						RePlanCmd:       "atlantis plan -d path -w workspace",
+						ApplyCmd:        "atlantis apply -d path -w workspace",
+					},
+					Workspace:  "workspace",
+					RepoRelDir: "path",
+				},
+			},
+			models.Github,
+			`Ran Plan for dir: $path$ workspace: $workspace$
+
+$$$diff
+terraform-output
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $atlantis apply -d path -w workspace$
+* :repeat: To **plan** this project again, comment:
+    * $atlantis plan -d path -w workspace$
+
+---
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
+`,
+		},
+		{
+			"single successful plan with master ahead",
+			models.PlanCommand,
+			[]models.ProjectResult{
+				{
+					PlanSuccess: &models.PlanSuccess{
+						TerraformOutput: "terraform-output",
+						LockURL:         "lock-url",
+						RePlanCmd:       "atlantis plan -d path -w workspace",
+						ApplyCmd:        "atlantis apply -d path -w workspace",
+						HasDiverged:     true,
+					},
+					Workspace:  "workspace",
+					RepoRelDir: "path",
+				},
+			},
+			models.Github,
+			`Ran Plan for dir: $path$ workspace: $workspace$
+
+$$$diff
+terraform-output
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $atlantis apply -d path -w workspace$
+* :repeat: To **plan** this project again, comment:
+    * $atlantis plan -d path -w workspace$
+
+:warning: The branch we're merging into is ahead, it is recommended to pull new commits first.
+
+---
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
+`,
+		},
+		{
+			"single successful plan with project name",
+			models.PlanCommand,
+			[]models.ProjectResult{
+				{
+					PlanSuccess: &models.PlanSuccess{
+						TerraformOutput: "terraform-output",
+						LockURL:         "lock-url",
+						RePlanCmd:       "atlantis plan -d path -w workspace",
+						ApplyCmd:        "atlantis apply -d path -w workspace",
+					},
+					Workspace:   "workspace",
+					RepoRelDir:  "path",
+					ProjectName: "projectname",
+				},
+			},
+			models.Github,
+			`Ran Plan for project: $projectname$ dir: $path$ workspace: $workspace$
+
+$$$diff
+terraform-output
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $atlantis apply -d path -w workspace$
+* :repeat: To **plan** this project again, comment:
+    * $atlantis plan -d path -w workspace$
+
+---
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
+`,
+		},
+		{
+			"single successful apply",
+			models.ApplyCommand,
+			[]models.ProjectResult{
+				{
+					ApplySuccess: "success",
+					Workspace:    "workspace",
+					RepoRelDir:   "path",
+				},
+			},
+			models.Github,
+			`Ran Apply for dir: $path$ workspace: $workspace$
+
+$$$diff
+success
+$$$
+
+`,
+		},
+		{
+			"single successful apply with project name",
+			models.ApplyCommand,
+			[]models.ProjectResult{
+				{
+					ApplySuccess: "success",
+					Workspace:    "workspace",
+					RepoRelDir:   "path",
+					ProjectName:  "projectname",
+				},
+			},
+			models.Github,
+			`Ran Apply for project: $projectname$ dir: $path$ workspace: $workspace$
+
+$$$diff
+success
+$$$
+
+`,
+		},
+		{
+			"multiple successful plans",
+			models.PlanCommand,
+			[]models.ProjectResult{
+				{
+					Workspace:  "workspace",
+					RepoRelDir: "path",
+					PlanSuccess: &models.PlanSuccess{
+						TerraformOutput: "terraform-output",
+						LockURL:         "lock-url",
+						ApplyCmd:        "atlantis apply -d path -w workspace",
+						RePlanCmd:       "atlantis plan -d path -w workspace",
+					},
+				},
+				{
+					Workspace:   "workspace",
+					RepoRelDir:  "path2",
+					ProjectName: "projectname",
+					PlanSuccess: &models.PlanSuccess{
+						TerraformOutput: "terraform-output2",
+						LockURL:         "lock-url2",
+						ApplyCmd:        "atlantis apply -d path2 -w workspace",
+						RePlanCmd:       "atlantis plan -d path2 -w workspace",
+					},
+				},
+			},
+			models.Github,
+			`Ran Plan for 2 projects:
+
+1. dir: $path$ workspace: $workspace$
+1. project: $projectname$ dir: $path2$ workspace: $workspace$
+
+### 1. dir: $path$ workspace: $workspace$
+$$$diff
+terraform-output
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $atlantis apply -d path -w workspace$
+* :repeat: To **plan** this project again, comment:
+    * $atlantis plan -d path -w workspace$
+
+---
+### 2. project: $projectname$ dir: $path2$ workspace: $workspace$
+$$$diff
+terraform-output2
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $atlantis apply -d path2 -w workspace$
+* :repeat: To **plan** this project again, comment:
+    * $atlantis plan -d path2 -w workspace$
+
+---
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
+`,
+		},
+		{
+			"multiple successful applies",
+			models.ApplyCommand,
+			[]models.ProjectResult{
+				{
+					RepoRelDir:   "path",
+					Workspace:    "workspace",
+					ProjectName:  "projectname",
+					ApplySuccess: "success",
+				},
+				{
+					RepoRelDir:   "path2",
+					Workspace:    "workspace",
+					ApplySuccess: "success2",
+				},
+			},
+			models.Github,
+			`Ran Apply for 2 projects:
+
+1. project: $projectname$ dir: $path$ workspace: $workspace$
+1. dir: $path2$ workspace: $workspace$
+
+### 1. project: $projectname$ dir: $path$ workspace: $workspace$
+$$$diff
+success
+$$$
+
+---
+### 2. dir: $path2$ workspace: $workspace$
+$$$diff
+success2
+$$$
+
+---
+
+`,
+		},
+		{
+			"single errored plan",
+			models.PlanCommand,
+			[]models.ProjectResult{
+				{
+					Error:      errors.New("error"),
+					RepoRelDir: "path",
+					Workspace:  "workspace",
+				},
+			},
+			models.Github,
+			`Ran Plan for dir: $path$ workspace: $workspace$
+
+**Plan Error**
+$$$
+error
+$$$
+
+`,
+		},
+		{
+			"single failed plan",
+			models.PlanCommand,
+			[]models.ProjectResult{
+				{
+					RepoRelDir: "path",
+					Workspace:  "workspace",
+					Failure:    "failure",
+				},
+			},
+			models.Github,
+			`Ran Plan for dir: $path$ workspace: $workspace$
+
+**Plan Failed**: failure
+
+`,
+		},
+		{
+			"successful, failed, and errored plan",
+			models.PlanCommand,
+			[]models.ProjectResult{
+				{
+					Workspace:  "workspace",
+					RepoRelDir: "path",
+					PlanSuccess: &models.PlanSuccess{
+						TerraformOutput: "terraform-output",
+						LockURL:         "lock-url",
+						ApplyCmd:        "atlantis apply -d path -w workspace",
+						RePlanCmd:       "atlantis plan -d path -w workspace",
+					},
+				},
+				{
+					Workspace:  "workspace",
+					RepoRelDir: "path2",
+					Failure:    "failure",
+				},
+				{
+					Workspace:   "workspace",
+					RepoRelDir:  "path3",
+					ProjectName: "projectname",
+					Error:       errors.New("error"),
+				},
+			},
+			models.Github,
+			`Ran Plan for 3 projects:
+
+1. dir: $path$ workspace: $workspace$
+1. dir: $path2$ workspace: $workspace$
+1. project: $projectname$ dir: $path3$ workspace: $workspace$
+
+### 1. dir: $path$ workspace: $workspace$
+$$$diff
+terraform-output
+$$$
+
+* :arrow_forward: To **apply** this plan, comment:
+    * $atlantis apply -d path -w workspace$
+* :repeat: To **plan** this project again, comment:
+    * $atlantis plan -d path -w workspace$
+
+---
+### 2. dir: $path2$ workspace: $workspace$
+**Plan Failed**: failure
+
+---
+### 3. project: $projectname$ dir: $path3$ workspace: $workspace$
+**Plan Error**
+$$$
+error
+$$$
+
+---
+* :fast_forward: To **apply** all unapplied plans from this pull request, comment:
+    * $atlantis apply$
+* :put_litter_in_its_place: To delete all plans and locks for the PR, comment:
+    * $atlantis unlock$
+`,
+		},
+		{
+			"successful, failed, and errored apply",
+			models.ApplyCommand,
+			[]models.ProjectResult{
+				{
+					Workspace:    "workspace",
+					RepoRelDir:   "path",
+					ApplySuccess: "success",
+				},
+				{
+					Workspace:  "workspace",
+					RepoRelDir: "path2",
+					Failure:    "failure",
+				},
+				{
+					Workspace:  "workspace",
+					RepoRelDir: "path3",
+					Error:      errors.New("error"),
+				},
+			},
+			models.Github,
+			`Ran Apply for 3 projects:
+
+1. dir: $path$ workspace: $workspace$
+1. dir: $path2$ workspace: $workspace$
+1. dir: $path3$ workspace: $workspace$
+
+### 1. dir: $path$ workspace: $workspace$
+$$$diff
+success
+$$$
+
+---
+### 2. dir: $path2$ workspace: $workspace$
+**Apply Failed**: failure
+
+---
+### 3. dir: $path3$ workspace: $workspace$
+**Apply Error**
+$$$
+error
+$$$
+
+---
+
+`,
+		},
+		{
+			"successful, failed, and errored apply",
+			models.ApplyCommand,
+			[]models.ProjectResult{
+				{
+					Workspace:    "workspace",
+					RepoRelDir:   "path",
+					ApplySuccess: "success",
+				},
+				{
+					Workspace:  "workspace",
+					RepoRelDir: "path2",
+					Failure:    "failure",
+				},
+				{
+					Workspace:  "workspace",
+					RepoRelDir: "path3",
+					Error:      errors.New("error"),
+				},
+			},
+			models.Github,
+			`Ran Apply for 3 projects:
+
+1. dir: $path$ workspace: $workspace$
+1. dir: $path2$ workspace: $workspace$
+1. dir: $path3$ workspace: $workspace$
+
+### 1. dir: $path$ workspace: $workspace$
+$$$diff
+success
+$$$
+
+---
+### 2. dir: $path2$ workspace: $workspace$
+**Apply Failed**: failure
+
+---
+### 3. dir: $path3$ workspace: $workspace$
+**Apply Error**
+$$$
+error
+$$$
+
+---
+
+`,
+		},
+	}
+
+	r := events.MarkdownRenderer{}
+	r.DisableRepoLocking = true
+	for _, c := range cases {
+		t.Run(c.Description, func(t *testing.T) {
+			res := events.CommandResult{
+				ProjectResults: c.ProjectResults,
+			}
+			for _, verbose := range []bool{true, false} {
+				t.Run(c.Description, func(t *testing.T) {
+					s := r.Render(res, c.Command, "log", verbose, c.VCSHost)
+					expWithBackticks := strings.Replace(c.Expected, "$", "`", -1)
+					if !verbose {
+						Equals(t, expWithBackticks, s)
+					} else {
+						Equals(t, expWithBackticks+"<details><summary>Log</summary>\n  <p>\n\n```\nlog```\n</p></details>\n", s)
+					}
+				})
+			}
 		})
 	}
 }

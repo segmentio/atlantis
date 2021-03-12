@@ -16,16 +16,18 @@ package events
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"path"
 	"strings"
 
-	"github.com/google/go-github/github"
-	gitlab "github.com/lkysow/go-gitlab"
+	"github.com/google/go-github/v31/github"
+	"github.com/mcdafydd/go-azuredevops/azuredevops"
 	"github.com/pkg/errors"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/events/vcs/bitbucketcloud"
 	"github.com/runatlantis/atlantis/server/events/vcs/bitbucketserver"
-	validator "gopkg.in/go-playground/validator.v9"
+	"github.com/xanzy/go-gitlab"
+	"gopkg.in/go-playground/validator.v9"
 )
 
 const gitlabPullOpened = "opened"
@@ -41,11 +43,30 @@ type PullCommand interface {
 	IsAutoplan() bool
 }
 
+// PolicyCheckCommand is a policy_check command that is automatically triggered
+// after successful plan command.
+type PolicyCheckCommand struct{}
+
+// CommandName is policy_check.
+func (c PolicyCheckCommand) CommandName() models.CommandName {
+	return models.PolicyCheckCommand
+}
+
+// IsVerbose is false for policy_check commands.
+func (c PolicyCheckCommand) IsVerbose() bool {
+	return false
+}
+
+// IsAutoplan is true for policy_check commands.
+func (c PolicyCheckCommand) IsAutoplan() bool {
+	return false
+}
+
 // AutoplanCommand is a plan command that is automatically triggered when a
 // pull request is opened or updated.
 type AutoplanCommand struct{}
 
-// CommandName is Plan.
+// CommandName is plan.
 func (c AutoplanCommand) CommandName() models.CommandName {
 	return models.PlanCommand
 }
@@ -234,6 +255,28 @@ type EventParsing interface {
 	// GetBitbucketServerPullEventType returns the type of the pull request
 	// event given the Bitbucket Server header.
 	GetBitbucketServerPullEventType(eventTypeHeader string) models.PullRequestEventType
+
+	// ParseAzureDevopsPull parses the response from the Azure DevOps API endpoint (not
+	// from a webhook) that returns a pull request.
+	// pull is the parsed pull request.
+	// baseRepo is the repo the pull request will be merged into.
+	// headRepo is the repo the pull request branch is from.
+	ParseAzureDevopsPull(adPull *azuredevops.GitPullRequest) (
+		pull models.PullRequest, baseRepo models.Repo, headRepo models.Repo, err error)
+
+	// ParseAzureDevopsPullEvent parses Azure DevOps pull request events.
+	// pull is the parsed pull request.
+	// pullEventType is the type of event, for example opened/closed.
+	// baseRepo is the repo the pull request will be merged into.
+	// headRepo is the repo the pull request branch is from.
+	// user is the pull request author.
+	ParseAzureDevopsPullEvent(pullEvent azuredevops.Event) (
+		pull models.PullRequest, pullEventType models.PullRequestEventType,
+		baseRepo models.Repo, headRepo models.Repo, user models.User, err error)
+
+	// ParseAzureDevopsRepo parses the response from the Azure DevOps API endpoint that
+	// returns a repo into the Atlantis model.
+	ParseAzureDevopsRepo(adRepo *azuredevops.GitRepository) (models.Repo, error)
 }
 
 // EventParser parses VCS events.
@@ -242,9 +285,12 @@ type EventParser struct {
 	GithubToken        string
 	GitlabUser         string
 	GitlabToken        string
+	AllowDraftPRs      bool
 	BitbucketUser      string
 	BitbucketToken     string
 	BitbucketServerURL string
+	AzureDevopsToken   string
+	AzureDevopsUser    string
 }
 
 // GetBitbucketCloudPullEventType returns the type of the pull request
@@ -358,9 +404,9 @@ func (e *EventParser) ParseGithubIssueCommentEvent(comment *github.IssueCommentE
 		err = errors.New("comment.user.login is null")
 		return
 	}
-	commentorUsername := comment.Comment.User.GetLogin()
+	commenterUsername := comment.Comment.User.GetLogin()
 	user = models.User{
-		Username: commentorUsername,
+		Username: commenterUsername,
 	}
 	pullNum = comment.Issue.GetNumber()
 	if pullNum == 0 {
@@ -390,8 +436,22 @@ func (e *EventParser) ParseGithubPullEvent(pullEvent *github.PullRequestEvent) (
 		err = errors.New("sender.login is null")
 		return
 	}
-	switch pullEvent.GetAction() {
+
+	action := pullEvent.GetAction()
+	// If it's a draft PR we ignore it for auto-planning if configured to do so
+	// however it's still possible for users to run plan on it manually via a
+	// comment so if any draft PR is closed we still need to check if we need
+	// to delete its locks.
+	if pullEvent.GetPullRequest().GetDraft() && pullEvent.GetAction() != "closed" && !e.AllowDraftPRs {
+		action = "other"
+	}
+
+	switch action {
 	case "opened":
+		pullEventType = models.OpenedPullEvent
+	case "ready_for_review":
+		// when an author takes a PR out of 'draft' state a 'ready_for_review'
+		// event is triggered. We want atlantis to treat this as a freshly opened PR
 		pullEventType = models.OpenedPullEvent
 	case "synchronize":
 		pullEventType = models.UpdatedPullEvent
@@ -670,4 +730,146 @@ func (e *EventParser) ParseBitbucketServerPullEvent(body []byte) (pull models.Pu
 	}
 	pull, baseRepo, headRepo, user, err = e.parseCommonBitbucketServerEventData(event.CommonEventData)
 	return
+}
+
+// ParseAzureDevopsPullEvent parses Azure DevOps pull request events.
+// See EventParsing for return value docs.
+func (e *EventParser) ParseAzureDevopsPullEvent(event azuredevops.Event) (pull models.PullRequest, pullEventType models.PullRequestEventType, baseRepo models.Repo, headRepo models.Repo, user models.User, err error) {
+	pullResource, ok := event.Resource.(*azuredevops.GitPullRequest)
+	if !ok {
+		err = errors.New("failed to type assert event.Resource")
+		return
+	}
+	pull, baseRepo, headRepo, err = e.ParseAzureDevopsPull(pullResource)
+	if err != nil {
+		return
+	}
+	createdBy := pullResource.GetCreatedBy()
+	if createdBy == nil {
+		err = errors.New("CreatedBy is null")
+		return
+	}
+	senderUsername := createdBy.GetUniqueName()
+	if senderUsername == "" {
+		err = errors.New("CreatedBy.UniqueName is null")
+		return
+	}
+	switch event.EventType {
+	case "git.pullrequest.created":
+		pullEventType = models.OpenedPullEvent
+	case "git.pullrequest.updated":
+		pullEventType = models.UpdatedPullEvent
+		if pull.State == models.ClosedPullState {
+			pullEventType = models.ClosedPullEvent
+		}
+	default:
+		pullEventType = models.OtherPullEvent
+	}
+	user = models.User{Username: senderUsername}
+	return
+}
+
+// ParseAzureDevopsPull parses the response from the Azure DevOps API endpoint (not
+// from a webhook) that returns a pull request.
+// See EventParsing for return value docs.
+func (e *EventParser) ParseAzureDevopsPull(pull *azuredevops.GitPullRequest) (pullModel models.PullRequest, baseRepo models.Repo, headRepo models.Repo, err error) {
+	commit := pull.LastMergeSourceCommit.GetCommitID()
+	if commit == "" {
+		err = errors.New("lastMergeSourceCommit.commitID is null")
+		return
+	}
+	url := pull.GetURL()
+	if url == "" {
+		err = errors.New("url is null")
+		return
+	}
+	headBranch := pull.GetSourceRefName()
+	if headBranch == "" {
+		err = errors.New("sourceRefName (branch name) is null")
+		return
+	}
+	baseBranch := pull.GetTargetRefName()
+	if baseBranch == "" {
+		err = errors.New("targetRefName (branch name) is null")
+		return
+	}
+	num := pull.GetPullRequestID()
+	if num == 0 {
+		err = errors.New("pullRequestId is null")
+		return
+	}
+	createdBy := pull.GetCreatedBy()
+	if createdBy == nil {
+		err = errors.New("CreatedBy is null")
+		return
+	}
+	authorUsername := createdBy.GetUniqueName()
+	if authorUsername == "" {
+		err = errors.New("CreatedBy.UniqueName is null")
+		return
+	}
+	baseRepo, err = e.ParseAzureDevopsRepo(pull.GetRepository())
+	if err != nil {
+		return
+	}
+	headRepo, err = e.ParseAzureDevopsRepo(pull.GetRepository())
+	if err != nil {
+		return
+	}
+	pullState := models.ClosedPullState
+	if *pull.Status == azuredevops.PullActive.String() {
+		pullState = models.OpenPullState
+	}
+
+	pullModel = models.PullRequest{
+		Author: authorUsername,
+		// Change webhook refs from "refs/heads/<branch>" to "<branch>"
+		HeadBranch: strings.Replace(headBranch, "refs/heads/", "", 1),
+		HeadCommit: commit,
+		URL:        url,
+		Num:        num,
+		State:      pullState,
+		BaseRepo:   baseRepo,
+		BaseBranch: strings.Replace(baseBranch, "refs/heads/", "", 1),
+	}
+	return
+}
+
+// ParseAzureDevopsRepo parses the response from the Azure DevOps API endpoint that
+// returns a repo into the Atlantis model.
+// If the event payload doesn't contain a parent repository reference, extract the owner
+// name from the URL. The URL will match one of two different formats:
+//
+// https://runatlantis.visualstudio.com/project/_git/repo
+// https://dev.azure.com/runatlantis/project/_git/repo
+//
+// See EventParsing for return value docs.
+func (e *EventParser) ParseAzureDevopsRepo(adRepo *azuredevops.GitRepository) (models.Repo, error) {
+	teamProject := adRepo.GetProject()
+	parent := adRepo.GetParentRepository()
+	owner := ""
+	if parent != nil {
+		owner = parent.GetName()
+	} else {
+		uri, err := url.Parse(adRepo.GetWebURL())
+		if err != nil {
+			return models.Repo{}, err
+		}
+		if strings.Contains(uri.Host, "visualstudio.com") {
+			owner = strings.Split(uri.Host, ".")[0]
+		} else if strings.Contains(uri.Host, "dev.azure.com") {
+			owner = strings.Split(uri.Path, "/")[1]
+		} else {
+			owner = ""
+		}
+	}
+
+	// Construct our own clone URL so we always get the new dev.azure.com
+	// hostname for now.
+	// https://docs.microsoft.com/en-us/azure/devops/release-notes/2018/sep-10-azure-devops-launch#switch-existing-organizations-to-use-the-new-domain-name-url
+	project := teamProject.GetName()
+	repo := adRepo.GetName()
+	cloneURL := fmt.Sprintf("https://dev.azure.com/%s/%s/_git/%s", owner, project, repo)
+	fullName := fmt.Sprintf("%s/%s/%s", owner, project, repo)
+	return models.NewRepo(models.AzureDevops, fullName, cloneURL, e.AzureDevopsUser, e.AzureDevopsToken)
 }

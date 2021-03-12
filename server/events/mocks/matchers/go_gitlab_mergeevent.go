@@ -4,7 +4,7 @@ package matchers
 import (
 	"reflect"
 	"github.com/petergtz/pegomock"
-	go_gitlab "github.com/lkysow/go-gitlab"
+	go_gitlab "github.com/xanzy/go-gitlab"
 )
 
 func AnyGoGitlabMergeEvent() go_gitlab.MergeEvent {

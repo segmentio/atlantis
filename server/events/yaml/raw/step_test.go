@@ -9,7 +9,7 @@ import (
 	yaml "gopkg.in/yaml.v2"
 )
 
-func TestStepConfig_UnmarshalYAML(t *testing.T) {
+func TestStepConfig_YAMLMarshalling(t *testing.T) {
 	cases := []struct {
 		description string
 		input       string
@@ -73,6 +73,37 @@ key2:
 				},
 			},
 		},
+		// Env steps
+		{
+			description: "env step value",
+			input: `
+env:
+  value: direct_value
+  name: test`,
+			exp: raw.Step{
+				Env: EnvType{
+					"env": {
+						"value": "direct_value",
+						"name":  "test",
+					},
+				},
+			},
+		},
+		{
+			description: "env step command",
+			input: `
+env:
+  command: echo 123
+  name: test`,
+			exp: raw.Step{
+				Env: EnvType{
+					"env": {
+						"command": "echo 123",
+						"name":    "test",
+					},
+				},
+			},
+		},
 
 		// Run-step style
 		{
@@ -106,6 +137,7 @@ key: value`,
 				Key:       nil,
 				Map:       nil,
 				StringVal: nil,
+				Env:       nil,
 			},
 		},
 
@@ -130,6 +162,14 @@ key:
 			}
 			Ok(t, err)
 			Equals(t, c.exp, got)
+
+			_, err = yaml.Marshal(got)
+			Ok(t, err)
+
+			var got2 raw.Step
+			err = yaml.UnmarshalStrict([]byte(c.input), &got2)
+			Ok(t, err)
+			Equals(t, got2, got)
 		})
 	}
 }
@@ -185,6 +225,18 @@ func TestStep_Validate(t *testing.T) {
 			expErr: "",
 		},
 		{
+			description: "env",
+			input: raw.Step{
+				Env: EnvType{
+					"env": {
+						"name":    "test",
+						"command": "echo 123",
+					},
+				},
+			},
+			expErr: "",
+		},
+		{
 			description: "apply extra_args",
 			input: raw.Step{
 				Map: MapType{
@@ -229,6 +281,16 @@ func TestStep_Validate(t *testing.T) {
 			expErr: "step element can only contain a single key, found 2: key1,key2",
 		},
 		{
+			description: "multiple keys in env",
+			input: raw.Step{
+				Env: EnvType{
+					"key1": nil,
+					"key2": nil,
+				},
+			},
+			expErr: "step element can only contain a single key, found 2: key1,key2",
+		},
+		{
 			description: "multiple keys in string val",
 			input: raw.Step{
 				StringVal: map[string]string{
@@ -242,6 +304,15 @@ func TestStep_Validate(t *testing.T) {
 			description: "invalid key in map",
 			input: raw.Step{
 				Map: MapType{
+					"invalid": nil,
+				},
+			},
+			expErr: "\"invalid\" is not a valid step type",
+		},
+		{
+			description: "invalid key in env",
+			input: raw.Step{
+				Env: EnvType{
 					"invalid": nil,
 				},
 			},
@@ -266,6 +337,54 @@ func TestStep_Validate(t *testing.T) {
 				},
 			},
 			expErr: "built-in steps only support a single extra_args key, found \"invalid\" in step init",
+		},
+		{
+			description: "non extra_arg key",
+			input: raw.Step{
+				Map: MapType{
+					"init": {
+						"invalid": nil,
+						"zzzzzzz": nil,
+					},
+				},
+			},
+			expErr: "built-in steps only support a single extra_args key, found 2: invalid,zzzzzzz",
+		},
+		{
+			description: "env step with no name key set",
+			input: raw.Step{
+				Env: EnvType{
+					"env": {
+						"value": "value",
+					},
+				},
+			},
+			expErr: "env steps must have a \"name\" key set",
+		},
+		{
+			description: "env step with invalid key",
+			input: raw.Step{
+				Env: EnvType{
+					"env": {
+						"abc":      "",
+						"invalid2": "",
+					},
+				},
+			},
+			expErr: "env steps only support keys \"name\", \"value\" and \"command\", found key \"abc\"",
+		},
+		{
+			description: "env step with both command and value set",
+			input: raw.Step{
+				Env: EnvType{
+					"env": {
+						"name":    "name",
+						"command": "command",
+						"value":   "value",
+					},
+				},
+			},
+			expErr: "env steps only support one of the \"value\" or \"command\" keys, found both",
 		},
 		{
 			// For atlantis.yaml v2, this wouldn't parse, but now there should
@@ -315,12 +434,37 @@ func TestStep_ToValid(t *testing.T) {
 			},
 		},
 		{
+			description: "policy_check step",
+			input: raw.Step{
+				Key: String("policy_check"),
+			},
+			exp: valid.Step{
+				StepName: "policy_check",
+			},
+		},
+		{
 			description: "apply step",
 			input: raw.Step{
 				Key: String("apply"),
 			},
 			exp: valid.Step{
 				StepName: "apply",
+			},
+		},
+		{
+			description: "env step",
+			input: raw.Step{
+				Env: EnvType{
+					"env": {
+						"name":    "test",
+						"command": "echo 123",
+					},
+				},
+			},
+			exp: valid.Step{
+				StepName:   "env",
+				RunCommand: "echo 123",
+				EnvVarName: "test",
 			},
 		},
 		{
@@ -348,6 +492,20 @@ func TestStep_ToValid(t *testing.T) {
 			},
 			exp: valid.Step{
 				StepName:  "plan",
+				ExtraArgs: []string{"arg1", "arg2"},
+			},
+		},
+		{
+			description: "policy_check extra_args",
+			input: raw.Step{
+				Map: MapType{
+					"policy_check": {
+						"extra_args": []string{"arg1", "arg2"},
+					},
+				},
+			},
+			exp: valid.Step{
+				StepName:  "policy_check",
 				ExtraArgs: []string{"arg1", "arg2"},
 			},
 		},
@@ -386,3 +544,4 @@ func TestStep_ToValid(t *testing.T) {
 }
 
 type MapType map[string]map[string][]string
+type EnvType map[string]map[string]string

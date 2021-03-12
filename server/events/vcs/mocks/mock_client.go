@@ -44,12 +44,27 @@ func (mock *MockClient) GetModifiedFiles(repo models.Repo, pull models.PullReque
 	return ret0, ret1
 }
 
-func (mock *MockClient) CreateComment(repo models.Repo, pullNum int, comment string) error {
+func (mock *MockClient) CreateComment(repo models.Repo, pullNum int, comment string, command string) error {
 	if mock == nil {
 		panic("mock must not be nil. Use myMock := NewMockClient().")
 	}
-	params := []pegomock.Param{repo, pullNum, comment}
+	params := []pegomock.Param{repo, pullNum, comment, command}
 	result := pegomock.GetGenericMockFrom(mock).Invoke("CreateComment", params, []reflect.Type{reflect.TypeOf((*error)(nil)).Elem()})
+	var ret0 error
+	if len(result) != 0 {
+		if result[0] != nil {
+			ret0 = result[0].(error)
+		}
+	}
+	return ret0
+}
+
+func (mock *MockClient) HidePrevPlanComments(repo models.Repo, pullNum int) error {
+	if mock == nil {
+		panic("mock must not be nil. Use myMock := NewMockClient().")
+	}
+	params := []pegomock.Param{repo, pullNum}
+	result := pegomock.GetGenericMockFrom(mock).Invoke("HidePrevPlanComments", params, []reflect.Type{reflect.TypeOf((*error)(nil)).Elem()})
 	var ret0 error
 	if len(result) != 0 {
 		if result[0] != nil {
@@ -127,6 +142,63 @@ func (mock *MockClient) MergePull(pull models.PullRequest) error {
 	return ret0
 }
 
+func (mock *MockClient) MarkdownPullLink(pull models.PullRequest) (string, error) {
+	if mock == nil {
+		panic("mock must not be nil. Use myMock := NewMockClient().")
+	}
+	params := []pegomock.Param{pull}
+	result := pegomock.GetGenericMockFrom(mock).Invoke("MarkdownPullLink", params, []reflect.Type{reflect.TypeOf((*string)(nil)).Elem(), reflect.TypeOf((*error)(nil)).Elem()})
+	var ret0 string
+	var ret1 error
+	if len(result) != 0 {
+		if result[0] != nil {
+			ret0 = result[0].(string)
+		}
+		if result[1] != nil {
+			ret1 = result[1].(error)
+		}
+	}
+	return ret0, ret1
+}
+
+func (mock *MockClient) DownloadRepoConfigFile(pull models.PullRequest) (bool, []byte, error) {
+	if mock == nil {
+		panic("mock must not be nil. Use myMock := NewMockClient().")
+	}
+	params := []pegomock.Param{pull}
+	result := pegomock.GetGenericMockFrom(mock).Invoke("DownloadRepoConfigFile", params, []reflect.Type{reflect.TypeOf((*bool)(nil)).Elem(), reflect.TypeOf((*[]byte)(nil)).Elem(), reflect.TypeOf((*error)(nil)).Elem()})
+	var ret0 bool
+	var ret1 []byte
+	var ret2 error
+	if len(result) != 0 {
+		if result[0] != nil {
+			ret0 = result[0].(bool)
+		}
+		if result[1] != nil {
+			ret1 = result[1].([]byte)
+		}
+		if result[2] != nil {
+			ret2 = result[2].(error)
+		}
+	}
+	return ret0, ret1, ret2
+}
+
+func (mock *MockClient) SupportsSingleFileDownload(repo models.Repo) bool {
+	if mock == nil {
+		panic("mock must not be nil. Use myMock := NewMockClient().")
+	}
+	params := []pegomock.Param{repo}
+	result := pegomock.GetGenericMockFrom(mock).Invoke("SupportsSingleFileDownload", params, []reflect.Type{reflect.TypeOf((*bool)(nil)).Elem()})
+	var ret0 bool
+	if len(result) != 0 {
+		if result[0] != nil {
+			ret0 = result[0].(bool)
+		}
+	}
+	return ret0
+}
+
 func (mock *MockClient) VerifyWasCalledOnce() *VerifierMockClient {
 	return &VerifierMockClient{
 		mock:                   mock,
@@ -183,11 +255,11 @@ func (c *MockClient_GetModifiedFiles_OngoingVerification) GetCapturedArguments()
 func (c *MockClient_GetModifiedFiles_OngoingVerification) GetAllCapturedArguments() (_param0 []models.Repo, _param1 []models.PullRequest) {
 	params := pegomock.GetGenericMockFrom(c.mock).GetInvocationParams(c.methodInvocations)
 	if len(params) > 0 {
-		_param0 = make([]models.Repo, len(params[0]))
+		_param0 = make([]models.Repo, len(c.methodInvocations))
 		for u, param := range params[0] {
 			_param0[u] = param.(models.Repo)
 		}
-		_param1 = make([]models.PullRequest, len(params[1]))
+		_param1 = make([]models.PullRequest, len(c.methodInvocations))
 		for u, param := range params[1] {
 			_param1[u] = param.(models.PullRequest)
 		}
@@ -195,8 +267,8 @@ func (c *MockClient_GetModifiedFiles_OngoingVerification) GetAllCapturedArgument
 	return
 }
 
-func (verifier *VerifierMockClient) CreateComment(repo models.Repo, pullNum int, comment string) *MockClient_CreateComment_OngoingVerification {
-	params := []pegomock.Param{repo, pullNum, comment}
+func (verifier *VerifierMockClient) CreateComment(repo models.Repo, pullNum int, comment string, command string) *MockClient_CreateComment_OngoingVerification {
+	params := []pegomock.Param{repo, pullNum, comment, command}
 	methodInvocations := pegomock.GetGenericMockFrom(verifier.mock).Verify(verifier.inOrderContext, verifier.invocationCountMatcher, "CreateComment", params, verifier.timeout)
 	return &MockClient_CreateComment_OngoingVerification{mock: verifier.mock, methodInvocations: methodInvocations}
 }
@@ -206,25 +278,60 @@ type MockClient_CreateComment_OngoingVerification struct {
 	methodInvocations []pegomock.MethodInvocation
 }
 
-func (c *MockClient_CreateComment_OngoingVerification) GetCapturedArguments() (models.Repo, int, string) {
-	repo, pullNum, comment := c.GetAllCapturedArguments()
-	return repo[len(repo)-1], pullNum[len(pullNum)-1], comment[len(comment)-1]
+func (c *MockClient_CreateComment_OngoingVerification) GetCapturedArguments() (models.Repo, int, string, string) {
+	repo, pullNum, comment, command := c.GetAllCapturedArguments()
+	return repo[len(repo)-1], pullNum[len(pullNum)-1], comment[len(comment)-1], command[len(command)-1]
 }
 
-func (c *MockClient_CreateComment_OngoingVerification) GetAllCapturedArguments() (_param0 []models.Repo, _param1 []int, _param2 []string) {
+func (c *MockClient_CreateComment_OngoingVerification) GetAllCapturedArguments() (_param0 []models.Repo, _param1 []int, _param2 []string, _param3 []string) {
 	params := pegomock.GetGenericMockFrom(c.mock).GetInvocationParams(c.methodInvocations)
 	if len(params) > 0 {
-		_param0 = make([]models.Repo, len(params[0]))
+		_param0 = make([]models.Repo, len(c.methodInvocations))
 		for u, param := range params[0] {
 			_param0[u] = param.(models.Repo)
 		}
-		_param1 = make([]int, len(params[1]))
+		_param1 = make([]int, len(c.methodInvocations))
 		for u, param := range params[1] {
 			_param1[u] = param.(int)
 		}
-		_param2 = make([]string, len(params[2]))
+		_param2 = make([]string, len(c.methodInvocations))
 		for u, param := range params[2] {
 			_param2[u] = param.(string)
+		}
+		_param3 = make([]string, len(c.methodInvocations))
+		for u, param := range params[3] {
+			_param3[u] = param.(string)
+		}
+	}
+	return
+}
+
+func (verifier *VerifierMockClient) HidePrevPlanComments(repo models.Repo, pullNum int) *MockClient_HidePrevPlanComments_OngoingVerification {
+	params := []pegomock.Param{repo, pullNum}
+	methodInvocations := pegomock.GetGenericMockFrom(verifier.mock).Verify(verifier.inOrderContext, verifier.invocationCountMatcher, "HidePrevPlanComments", params, verifier.timeout)
+	return &MockClient_HidePrevPlanComments_OngoingVerification{mock: verifier.mock, methodInvocations: methodInvocations}
+}
+
+type MockClient_HidePrevPlanComments_OngoingVerification struct {
+	mock              *MockClient
+	methodInvocations []pegomock.MethodInvocation
+}
+
+func (c *MockClient_HidePrevPlanComments_OngoingVerification) GetCapturedArguments() (models.Repo, int) {
+	repo, pullNum := c.GetAllCapturedArguments()
+	return repo[len(repo)-1], pullNum[len(pullNum)-1]
+}
+
+func (c *MockClient_HidePrevPlanComments_OngoingVerification) GetAllCapturedArguments() (_param0 []models.Repo, _param1 []int) {
+	params := pegomock.GetGenericMockFrom(c.mock).GetInvocationParams(c.methodInvocations)
+	if len(params) > 0 {
+		_param0 = make([]models.Repo, len(c.methodInvocations))
+		for u, param := range params[0] {
+			_param0[u] = param.(models.Repo)
+		}
+		_param1 = make([]int, len(c.methodInvocations))
+		for u, param := range params[1] {
+			_param1[u] = param.(int)
 		}
 	}
 	return
@@ -249,11 +356,11 @@ func (c *MockClient_PullIsApproved_OngoingVerification) GetCapturedArguments() (
 func (c *MockClient_PullIsApproved_OngoingVerification) GetAllCapturedArguments() (_param0 []models.Repo, _param1 []models.PullRequest) {
 	params := pegomock.GetGenericMockFrom(c.mock).GetInvocationParams(c.methodInvocations)
 	if len(params) > 0 {
-		_param0 = make([]models.Repo, len(params[0]))
+		_param0 = make([]models.Repo, len(c.methodInvocations))
 		for u, param := range params[0] {
 			_param0[u] = param.(models.Repo)
 		}
-		_param1 = make([]models.PullRequest, len(params[1]))
+		_param1 = make([]models.PullRequest, len(c.methodInvocations))
 		for u, param := range params[1] {
 			_param1[u] = param.(models.PullRequest)
 		}
@@ -280,11 +387,11 @@ func (c *MockClient_PullIsMergeable_OngoingVerification) GetCapturedArguments() 
 func (c *MockClient_PullIsMergeable_OngoingVerification) GetAllCapturedArguments() (_param0 []models.Repo, _param1 []models.PullRequest) {
 	params := pegomock.GetGenericMockFrom(c.mock).GetInvocationParams(c.methodInvocations)
 	if len(params) > 0 {
-		_param0 = make([]models.Repo, len(params[0]))
+		_param0 = make([]models.Repo, len(c.methodInvocations))
 		for u, param := range params[0] {
 			_param0[u] = param.(models.Repo)
 		}
-		_param1 = make([]models.PullRequest, len(params[1]))
+		_param1 = make([]models.PullRequest, len(c.methodInvocations))
 		for u, param := range params[1] {
 			_param1[u] = param.(models.PullRequest)
 		}
@@ -311,27 +418,27 @@ func (c *MockClient_UpdateStatus_OngoingVerification) GetCapturedArguments() (mo
 func (c *MockClient_UpdateStatus_OngoingVerification) GetAllCapturedArguments() (_param0 []models.Repo, _param1 []models.PullRequest, _param2 []models.CommitStatus, _param3 []string, _param4 []string, _param5 []string) {
 	params := pegomock.GetGenericMockFrom(c.mock).GetInvocationParams(c.methodInvocations)
 	if len(params) > 0 {
-		_param0 = make([]models.Repo, len(params[0]))
+		_param0 = make([]models.Repo, len(c.methodInvocations))
 		for u, param := range params[0] {
 			_param0[u] = param.(models.Repo)
 		}
-		_param1 = make([]models.PullRequest, len(params[1]))
+		_param1 = make([]models.PullRequest, len(c.methodInvocations))
 		for u, param := range params[1] {
 			_param1[u] = param.(models.PullRequest)
 		}
-		_param2 = make([]models.CommitStatus, len(params[2]))
+		_param2 = make([]models.CommitStatus, len(c.methodInvocations))
 		for u, param := range params[2] {
 			_param2[u] = param.(models.CommitStatus)
 		}
-		_param3 = make([]string, len(params[3]))
+		_param3 = make([]string, len(c.methodInvocations))
 		for u, param := range params[3] {
 			_param3[u] = param.(string)
 		}
-		_param4 = make([]string, len(params[4]))
+		_param4 = make([]string, len(c.methodInvocations))
 		for u, param := range params[4] {
 			_param4[u] = param.(string)
 		}
-		_param5 = make([]string, len(params[5]))
+		_param5 = make([]string, len(c.methodInvocations))
 		for u, param := range params[5] {
 			_param5[u] = param.(string)
 		}
@@ -358,9 +465,90 @@ func (c *MockClient_MergePull_OngoingVerification) GetCapturedArguments() models
 func (c *MockClient_MergePull_OngoingVerification) GetAllCapturedArguments() (_param0 []models.PullRequest) {
 	params := pegomock.GetGenericMockFrom(c.mock).GetInvocationParams(c.methodInvocations)
 	if len(params) > 0 {
-		_param0 = make([]models.PullRequest, len(params[0]))
+		_param0 = make([]models.PullRequest, len(c.methodInvocations))
 		for u, param := range params[0] {
 			_param0[u] = param.(models.PullRequest)
+		}
+	}
+	return
+}
+
+func (verifier *VerifierMockClient) MarkdownPullLink(pull models.PullRequest) *MockClient_MarkdownPullLink_OngoingVerification {
+	params := []pegomock.Param{pull}
+	methodInvocations := pegomock.GetGenericMockFrom(verifier.mock).Verify(verifier.inOrderContext, verifier.invocationCountMatcher, "MarkdownPullLink", params, verifier.timeout)
+	return &MockClient_MarkdownPullLink_OngoingVerification{mock: verifier.mock, methodInvocations: methodInvocations}
+}
+
+type MockClient_MarkdownPullLink_OngoingVerification struct {
+	mock              *MockClient
+	methodInvocations []pegomock.MethodInvocation
+}
+
+func (c *MockClient_MarkdownPullLink_OngoingVerification) GetCapturedArguments() models.PullRequest {
+	pull := c.GetAllCapturedArguments()
+	return pull[len(pull)-1]
+}
+
+func (c *MockClient_MarkdownPullLink_OngoingVerification) GetAllCapturedArguments() (_param0 []models.PullRequest) {
+	params := pegomock.GetGenericMockFrom(c.mock).GetInvocationParams(c.methodInvocations)
+	if len(params) > 0 {
+		_param0 = make([]models.PullRequest, len(c.methodInvocations))
+		for u, param := range params[0] {
+			_param0[u] = param.(models.PullRequest)
+		}
+	}
+	return
+}
+
+func (verifier *VerifierMockClient) DownloadRepoConfigFile(pull models.PullRequest) *MockClient_DownloadRepoConfigFile_OngoingVerification {
+	params := []pegomock.Param{pull}
+	methodInvocations := pegomock.GetGenericMockFrom(verifier.mock).Verify(verifier.inOrderContext, verifier.invocationCountMatcher, "DownloadRepoConfigFile", params, verifier.timeout)
+	return &MockClient_DownloadRepoConfigFile_OngoingVerification{mock: verifier.mock, methodInvocations: methodInvocations}
+}
+
+type MockClient_DownloadRepoConfigFile_OngoingVerification struct {
+	mock              *MockClient
+	methodInvocations []pegomock.MethodInvocation
+}
+
+func (c *MockClient_DownloadRepoConfigFile_OngoingVerification) GetCapturedArguments() models.PullRequest {
+	pull := c.GetAllCapturedArguments()
+	return pull[len(pull)-1]
+}
+
+func (c *MockClient_DownloadRepoConfigFile_OngoingVerification) GetAllCapturedArguments() (_param0 []models.PullRequest) {
+	params := pegomock.GetGenericMockFrom(c.mock).GetInvocationParams(c.methodInvocations)
+	if len(params) > 0 {
+		_param0 = make([]models.PullRequest, len(c.methodInvocations))
+		for u, param := range params[0] {
+			_param0[u] = param.(models.PullRequest)
+		}
+	}
+	return
+}
+
+func (verifier *VerifierMockClient) SupportsSingleFileDownload(repo models.Repo) *MockClient_SupportsSingleFileDownload_OngoingVerification {
+	params := []pegomock.Param{repo}
+	methodInvocations := pegomock.GetGenericMockFrom(verifier.mock).Verify(verifier.inOrderContext, verifier.invocationCountMatcher, "SupportsSingleFileDownload", params, verifier.timeout)
+	return &MockClient_SupportsSingleFileDownload_OngoingVerification{mock: verifier.mock, methodInvocations: methodInvocations}
+}
+
+type MockClient_SupportsSingleFileDownload_OngoingVerification struct {
+	mock              *MockClient
+	methodInvocations []pegomock.MethodInvocation
+}
+
+func (c *MockClient_SupportsSingleFileDownload_OngoingVerification) GetCapturedArguments() models.Repo {
+	repo := c.GetAllCapturedArguments()
+	return repo[len(repo)-1]
+}
+
+func (c *MockClient_SupportsSingleFileDownload_OngoingVerification) GetAllCapturedArguments() (_param0 []models.Repo) {
+	params := pegomock.GetGenericMockFrom(c.mock).GetInvocationParams(c.methodInvocations)
+	if len(params) > 0 {
+		_param0 = make([]models.Repo, len(c.methodInvocations))
+		for u, param := range params[0] {
+			_param0[u] = param.(models.Repo)
 		}
 	}
 	return

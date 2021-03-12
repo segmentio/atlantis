@@ -231,7 +231,7 @@ func TestProject_ToValid(t *testing.T) {
 				WorkflowName:     nil,
 				TerraformVersion: nil,
 				Autoplan: valid.Autoplan{
-					WhenModified: []string{"**/*.tf*"},
+					WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 					Enabled:      true,
 				},
 				ApplyRequirements: nil,
@@ -276,13 +276,14 @@ func TestProject_ToValid(t *testing.T) {
 				Workspace:        "default",
 				TerraformVersion: tfVersionPointEleven,
 				Autoplan: valid.Autoplan{
-					WhenModified: []string{"**/*.tf*"},
+					WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 					Enabled:      true,
 				},
 			},
 		},
+		// Directories.
 		{
-			description: "dir with /",
+			description: "dir set to /",
 			input: raw.Project{
 				Dir: String("/"),
 			},
@@ -290,7 +291,21 @@ func TestProject_ToValid(t *testing.T) {
 				Dir:       ".",
 				Workspace: "default",
 				Autoplan: valid.Autoplan{
-					WhenModified: []string{"**/*.tf*"},
+					WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
+					Enabled:      true,
+				},
+			},
+		},
+		{
+			description: "dir starting with /",
+			input: raw.Project{
+				Dir: String("/a/b/c"),
+			},
+			exp: valid.Project{
+				Dir:       "a/b/c",
+				Workspace: "default",
+				Autoplan: valid.Autoplan{
+					WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 					Enabled:      true,
 				},
 			},
@@ -304,7 +319,7 @@ func TestProject_ToValid(t *testing.T) {
 				Dir:       "mydir",
 				Workspace: "default",
 				Autoplan: valid.Autoplan{
-					WhenModified: []string{"**/*.tf*"},
+					WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 					Enabled:      true,
 				},
 			},
@@ -319,11 +334,54 @@ func TestProject_ToValid(t *testing.T) {
 				Dir:       "mydir",
 				Workspace: "default",
 				Autoplan: valid.Autoplan{
-					WhenModified: []string{"**/*.tf*"},
+					WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 					Enabled:      true,
 				},
 			},
 		},
+		{
+			description: "dir set to ./",
+			input: raw.Project{
+				Dir: String("./"),
+			},
+			exp: valid.Project{
+				Dir:       ".",
+				Workspace: "default",
+				Autoplan: valid.Autoplan{
+					WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
+					Enabled:      true,
+				},
+			},
+		},
+		{
+			description: "dir set to ././",
+			input: raw.Project{
+				Dir: String("././"),
+			},
+			exp: valid.Project{
+				Dir:       ".",
+				Workspace: "default",
+				Autoplan: valid.Autoplan{
+					WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
+					Enabled:      true,
+				},
+			},
+		},
+		{
+			description: "dir set to .",
+			input: raw.Project{
+				Dir: String("."),
+			},
+			exp: valid.Project{
+				Dir:       ".",
+				Workspace: "default",
+				Autoplan: valid.Autoplan{
+					WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
+					Enabled:      true,
+				},
+			},
+		},
+
 		{
 			description: "workspace set to empty string",
 			input: raw.Project{
@@ -334,7 +392,7 @@ func TestProject_ToValid(t *testing.T) {
 				Dir:       ".",
 				Workspace: "default",
 				Autoplan: valid.Autoplan{
-					WhenModified: []string{"**/*.tf*"},
+					WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 					Enabled:      true,
 				},
 			},

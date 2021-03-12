@@ -27,9 +27,9 @@ import (
 	"strings"
 	"sync"
 
-	getter "github.com/hashicorp/go-getter"
-	version "github.com/hashicorp/go-version"
-	homedir "github.com/mitchellh/go-homedir"
+	"github.com/hashicorp/go-getter"
+	"github.com/hashicorp/go-version"
+	"github.com/mitchellh/go-homedir"
 	"github.com/pkg/errors"
 	"github.com/runatlantis/atlantis/server/logging"
 )
@@ -40,20 +40,26 @@ type Client interface {
 	// RunCommandWithVersion executes terraform with args in path. If v is nil,
 	// it will use the default Terraform version. workspace is the Terraform
 	// workspace which should be set as an environment variable.
-	RunCommandWithVersion(log *logging.SimpleLogger, path string, args []string, v *version.Version, workspace string) (string, error)
+	RunCommandWithVersion(log *logging.SimpleLogger, path string, args []string, envs map[string]string, v *version.Version, workspace string) (string, error)
+
+	// EnsureVersion makes sure that terraform version `v` is available to use
+	EnsureVersion(log *logging.SimpleLogger, v *version.Version) error
 }
 
 type DefaultClient struct {
 	// defaultVersion is the default version of terraform to use if another
 	// version isn't specified.
-	defaultVersion          *version.Version
+	defaultVersion *version.Version
+	// We will run terraform with the TF_PLUGIN_CACHE_DIR env var set to this
+	// directory inside our data dir.
 	terraformPluginCacheDir string
 	binDir                  string
 	// overrideTF can be used to override the terraform binary during testing
 	// with another binary, ex. echo.
 	overrideTF string
 	// downloader downloads terraform versions.
-	downloader Downloader
+	downloader      Downloader
+	downloadBaseURL string
 	// versions maps from the string representation of a tf version (ex. 0.11.10)
 	// to the absolute path of that binary on disk (if it exists).
 	// Use versionsLock to control access.
@@ -61,6 +67,9 @@ type DefaultClient struct {
 
 	// versionsLock is used to ensure versions isn't being concurrently written to.
 	versionsLock *sync.Mutex
+
+	// usePluginCache determines whether or not to set the TF_PLUGIN_CACHE_DIR env var
+	usePluginCache bool
 }
 
 //go:generate pegomock generate -m --use-experimental-model-gen --package mocks -o mocks/mock_downloader.go Downloader
@@ -68,18 +77,8 @@ type DefaultClient struct {
 // Downloader is for downloading terraform versions.
 type Downloader interface {
 	GetFile(dst, src string, opts ...getter.ClientOption) error
+	GetAny(dst, src string, opts ...getter.ClientOption) error
 }
-
-const (
-	// terraformPluginCacheDir is the name of the dir inside our data dir
-	// where we tell terraform to cache plugins and modules.
-	terraformPluginCacheDirName = "plugin-cache"
-	// binDirName is the name of the directory inside our data dir where
-	// we download terraform binaries.
-	binDirName = "bin"
-	// releasesURL is the base url to download terraform from.
-	releasesURL = "https://releases.hashicorp.com"
-)
 
 // versionRegex extracts the version from `terraform version` output.
 //     Terraform v0.12.0-alpha4 (2c36829d3265661d8edbd5014de8090ea7e2a076)
@@ -99,12 +98,15 @@ var versionRegex = regexp.MustCompile("Terraform v(.*?)(\\s.*)?\n")
 // Will asynchronously download the required version if it doesn't exist already.
 func NewClient(
 	log *logging.SimpleLogger,
-	dataDir string,
+	binDir string,
+	cacheDir string,
 	tfeToken string,
 	tfeHostname string,
 	defaultVersionStr string,
 	defaultVersionFlagName string,
-	tfDownloader Downloader) (*DefaultClient, error) {
+	tfDownloadURL string,
+	tfDownloader Downloader,
+	usePluginCache bool) (*DefaultClient, error) {
 	var finalDefaultVersion *version.Version
 	var localVersion *version.Version
 	versions := make(map[string]string)
@@ -127,11 +129,6 @@ func NewClient(
 		}
 	}
 
-	binDir := filepath.Join(dataDir, binDirName)
-	if err := os.MkdirAll(binDir, 0700); err != nil {
-		return nil, errors.Wrapf(err, "unable to create terraform bin dir %q", binDir)
-	}
-
 	if defaultVersionStr != "" {
 		defaultVersion, err := version.NewVersion(defaultVersionStr)
 		if err != nil {
@@ -142,10 +139,10 @@ func NewClient(
 			// Since ensureVersion might end up downloading terraform,
 			// we call it asynchronously so as to not delay server startup.
 			versionsLock.Lock()
-			_, err := ensureVersion(log, tfDownloader, versions, defaultVersion, binDir)
+			_, err := ensureVersion(log, tfDownloader, versions, defaultVersion, binDir, tfDownloadURL)
 			versionsLock.Unlock()
 			if err != nil {
-				log.Err("could not download terraform %s", defaultVersion.String())
+				log.Err("could not download terraform %s: %s", defaultVersion.String(), err)
 			}
 		}()
 	}
@@ -161,20 +158,15 @@ func NewClient(
 		}
 	}
 
-	// We will run terraform with the TF_PLUGIN_CACHE_DIR env var set to this
-	// directory inside our data dir.
-	cacheDir := filepath.Join(dataDir, terraformPluginCacheDirName)
-	if err := os.MkdirAll(cacheDir, 0700); err != nil {
-		return nil, errors.Wrapf(err, "unable to create terraform plugin cache directory at %q", terraformPluginCacheDirName)
-	}
-
 	return &DefaultClient{
 		defaultVersion:          finalDefaultVersion,
 		terraformPluginCacheDir: cacheDir,
 		binDir:                  binDir,
 		downloader:              tfDownloader,
+		downloadBaseURL:         tfDownloadURL,
 		versionsLock:            &versionsLock,
 		versions:                versions,
+		usePluginCache:          usePluginCache,
 	}, nil
 }
 
@@ -184,12 +176,39 @@ func (c *DefaultClient) DefaultVersion() *version.Version {
 	return c.defaultVersion
 }
 
+// TerraformBinDir returns the directory where we download Terraform binaries.
+func (c *DefaultClient) TerraformBinDir() string {
+	return c.binDir
+}
+
+// See Client.EnsureVersion.
+func (c *DefaultClient) EnsureVersion(log *logging.SimpleLogger, v *version.Version) error {
+	if v == nil {
+		v = c.defaultVersion
+	}
+
+	var err error
+	c.versionsLock.Lock()
+	_, err = ensureVersion(log, c.downloader, c.versions, v, c.binDir, c.downloadBaseURL)
+	c.versionsLock.Unlock()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // See Client.RunCommandWithVersion.
-func (c *DefaultClient) RunCommandWithVersion(log *logging.SimpleLogger, path string, args []string, v *version.Version, workspace string) (string, error) {
+func (c *DefaultClient) RunCommandWithVersion(log *logging.SimpleLogger, path string, args []string, customEnvVars map[string]string, v *version.Version, workspace string) (string, error) {
 	tfCmd, cmd, err := c.prepCmd(log, v, workspace, path, args)
 	if err != nil {
 		return "", err
 	}
+	envVars := cmd.Env
+	for key, val := range customEnvVars {
+		envVars = append(envVars, fmt.Sprintf("%s=%s", key, val))
+	}
+	cmd.Env = envVars
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		err = errors.Wrapf(err, "running %q in %q", tfCmd, path)
@@ -215,7 +234,7 @@ func (c *DefaultClient) prepCmd(log *logging.SimpleLogger, v *version.Version, w
 	} else {
 		var err error
 		c.versionsLock.Lock()
-		binPath, err = ensureVersion(log, c.downloader, c.versions, v, c.binDir)
+		binPath, err = ensureVersion(log, c.downloader, c.versions, v, c.binDir, c.downloadBaseURL)
 		c.versionsLock.Unlock()
 		if err != nil {
 			return "", nil, err
@@ -228,10 +247,13 @@ func (c *DefaultClient) prepCmd(log *logging.SimpleLogger, v *version.Version, w
 		// Will de-emphasize specific commands to run in output.
 		"TF_IN_AUTOMATION=true",
 		// Cache plugins so terraform init runs faster.
-		fmt.Sprintf("TF_PLUGIN_CACHE_DIR=%s", c.terraformPluginCacheDir),
 		fmt.Sprintf("WORKSPACE=%s", workspace),
+		fmt.Sprintf("TF_WORKSPACE=%s", workspace),
 		fmt.Sprintf("ATLANTIS_TERRAFORM_VERSION=%s", v.String()),
 		fmt.Sprintf("DIR=%s", path),
+	}
+	if c.usePluginCache {
+		envVars = append(envVars, fmt.Sprintf("TF_PLUGIN_CACHE_DIR=%s", c.terraformPluginCacheDir))
 	}
 	// Append current Atlantis process's environment variables, ex.
 	// AWS_ACCESS_KEY.
@@ -257,7 +279,7 @@ type Line struct {
 // Callers can use the input channel to pass stdin input to the command.
 // If any error is passed on the out channel, there will be no
 // further output (so callers are free to exit).
-func (c *DefaultClient) RunCommandAsync(log *logging.SimpleLogger, path string, args []string, v *version.Version, workspace string) (chan<- string, <-chan Line) {
+func (c *DefaultClient) RunCommandAsync(log *logging.SimpleLogger, path string, args []string, customEnvVars map[string]string, v *version.Version, workspace string) (chan<- string, <-chan Line) {
 	outCh := make(chan Line)
 	inCh := make(chan string)
 
@@ -280,6 +302,11 @@ func (c *DefaultClient) RunCommandAsync(log *logging.SimpleLogger, path string, 
 		stdout, _ := cmd.StdoutPipe()
 		stderr, _ := cmd.StderrPipe()
 		stdin, _ := cmd.StdinPipe()
+		envVars := cmd.Env
+		for key, val := range customEnvVars {
+			envVars = append(envVars, fmt.Sprintf("%s=%s", key, val))
+		}
+		cmd.Env = envVars
 
 		log.Debug("starting %q in %q", tfCmd, path)
 		err = cmd.Start()
@@ -355,7 +382,7 @@ func MustConstraint(v string) version.Constraints {
 
 // ensureVersion returns the path to a terraform binary of version v.
 // It will download this version if we don't have it.
-func ensureVersion(log *logging.SimpleLogger, dl Downloader, versions map[string]string, v *version.Version, binDir string) (string, error) {
+func ensureVersion(log *logging.SimpleLogger, dl Downloader, versions map[string]string, v *version.Version, binDir string, downloadURL string) (string, error) {
 	if binPath, ok := versions[v.String()]; ok {
 		return binPath, nil
 	}
@@ -376,13 +403,13 @@ func ensureVersion(log *logging.SimpleLogger, dl Downloader, versions map[string
 		versions[v.String()] = dest
 		return dest, nil
 	}
-
-	log.Info("could not find terraform version %s in PATH or %s, downloading from %s", v.String(), binDir, releasesURL)
-	urlPrefix := fmt.Sprintf("%s/terraform/%s/terraform_%s", releasesURL, v.String(), v.String())
+	log.Info("could not find terraform version %s in PATH or %s, downloading from %s", v.String(), binDir, downloadURL)
+	urlPrefix := fmt.Sprintf("%s/terraform/%s/terraform_%s", downloadURL, v.String(), v.String())
 	binURL := fmt.Sprintf("%s_%s_%s.zip", urlPrefix, runtime.GOOS, runtime.GOARCH)
 	checksumURL := fmt.Sprintf("%s_SHA256SUMS", urlPrefix)
-	if err := dl.GetFile(dest, fmt.Sprintf("%s?checksum=file:%s", binURL, checksumURL)); err != nil {
-		return "", errors.Wrapf(err, "downloading terraform version %s", v.String())
+	fullSrcURL := fmt.Sprintf("%s?checksum=file:%s", binURL, checksumURL)
+	if err := dl.GetFile(dest, fullSrcURL); err != nil {
+		return "", errors.Wrapf(err, "downloading terraform version %s at %q", v.String(), fullSrcURL)
 	}
 
 	log.Info("downloaded terraform %s to %s", v.String(), dest)
@@ -445,4 +472,9 @@ type DefaultDownloader struct{}
 // See go-getter.GetFile.
 func (d *DefaultDownloader) GetFile(dst, src string, opts ...getter.ClientOption) error {
 	return getter.GetFile(dst, src, opts...)
+}
+
+// See go-getter.GetFile.
+func (d *DefaultDownloader) GetAny(dst, src string, opts ...getter.ClientOption) error {
+	return getter.GetAny(dst, src, opts...)
 }

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	version "github.com/hashicorp/go-version"
+	"github.com/hashicorp/go-version"
 	"github.com/runatlantis/atlantis/server/events/yaml"
 	"github.com/runatlantis/atlantis/server/events/yaml/valid"
 	. "github.com/runatlantis/atlantis/testing"
@@ -31,6 +31,17 @@ func TestHasRepoCfg_FileDoesNotExist(t *testing.T) {
 	exists, err := r.HasRepoCfg(tmpDir)
 	Ok(t, err)
 	Equals(t, false, exists)
+}
+
+func TestHasRepoCfg_InvalidFileExtension(t *testing.T) {
+	tmpDir, cleanup := TempDir(t)
+	defer cleanup()
+	_, err := os.Create(filepath.Join(tmpDir, "atlantis.yml"))
+	Ok(t, err)
+
+	r := yaml.ParserValidator{}
+	_, err = r.HasRepoCfg(tmpDir)
+	ErrContains(t, "found \"atlantis.yml\" as config file; rename using the .yaml extension - \"atlantis.yaml\"", err)
 }
 
 func TestParseRepoCfg_DirDoesNotExist(t *testing.T) {
@@ -125,11 +136,11 @@ projects:
 		{
 			description: "empty version",
 			input: `
-version: ~
+version:
 projects:
 - dir: "."
 `,
-			expErr: "version: only versions 2 and 3 are supported.",
+			expErr: "version: is required. If you've just upgraded Atlantis you need to rewrite your atlantis.yaml for version 3. See www.runatlantis.io/docs/upgrading-atlantis-yaml.html.",
 		},
 		{
 			description: "version 2",
@@ -146,8 +157,9 @@ workflows:
 				ProjectLocks: true,
 				Workflows: map[string]valid.Workflow{
 					"custom": {
-						Name:  "custom",
-						Apply: valid.DefaultApplyStage,
+						Name:        "custom",
+						Apply:       valid.DefaultApplyStage,
+						PolicyCheck: valid.DefaultPolicyCheckStage,
 						Plan: valid.Stage{
 							Steps: []valid.Step{
 								{
@@ -198,7 +210,7 @@ projects:
 						WorkflowName:     nil,
 						TerraformVersion: nil,
 						Autoplan: valid.Autoplan{
-							WhenModified: []string{"**/*.tf*"},
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 							Enabled:      true,
 						},
 						ApplyRequirements: nil,
@@ -209,6 +221,29 @@ projects:
 		},
 		{
 			description: "autoplan should be enabled by default",
+			input: `
+version: 3
+projects:
+- dir: "."
+`,
+			exp: valid.RepoCfg{
+				Version:      3,
+				ProjectLocks: true,
+				Projects: []valid.Project{
+					{
+						Dir:       ".",
+						Workspace: "default",
+						Autoplan: valid.Autoplan{
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
+							Enabled:      true,
+						},
+					},
+				},
+				Workflows: make(map[string]valid.Workflow),
+			},
+		},
+		{
+			description: "autoplan should be enabled if only when_modified set",
 			input: `
 version: 3
 projects:
@@ -247,7 +282,7 @@ projects:
 						Dir:       ".",
 						Workspace: "default",
 						Autoplan: valid.Autoplan{
-							WhenModified: []string{"**/*.tf*"},
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 							Enabled:      true,
 						},
 					},
@@ -271,7 +306,7 @@ workflows: ~
 						Dir:       ".",
 						Workspace: "default",
 						Autoplan: valid.Autoplan{
-							WhenModified: []string{"**/*.tf*"},
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 							Enabled:      true,
 						},
 					},
@@ -300,16 +335,17 @@ workflows:
 						Dir:       ".",
 						Workspace: "default",
 						Autoplan: valid.Autoplan{
-							WhenModified: []string{"**/*.tf*"},
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 							Enabled:      true,
 						},
 					},
 				},
 				Workflows: map[string]valid.Workflow{
 					"default": {
-						Name:  "default",
-						Plan:  valid.DefaultPlanStage,
-						Apply: valid.DefaultApplyStage,
+						Name:        "default",
+						Plan:        valid.DefaultPlanStage,
+						Apply:       valid.DefaultApplyStage,
+						PolicyCheck: valid.DefaultPolicyCheckStage,
 					},
 				},
 			},
@@ -336,7 +372,7 @@ workflows:
 						WorkflowName:     String("myworkflow"),
 						TerraformVersion: tfVersion,
 						Autoplan: valid.Autoplan{
-							WhenModified: []string{"**/*.tf*"},
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 							Enabled:      true,
 						},
 						ApplyRequirements: []string{"approved"},
@@ -344,9 +380,10 @@ workflows:
 				},
 				Workflows: map[string]valid.Workflow{
 					"myworkflow": {
-						Name:  "myworkflow",
-						Apply: valid.DefaultApplyStage,
-						Plan:  valid.DefaultPlanStage,
+						Name:        "myworkflow",
+						Apply:       valid.DefaultApplyStage,
+						Plan:        valid.DefaultPlanStage,
+						PolicyCheck: valid.DefaultPolicyCheckStage,
 					},
 				},
 			},
@@ -375,7 +412,7 @@ workflows:
 						WorkflowName:     String("myworkflow"),
 						TerraformVersion: tfVersion,
 						Autoplan: valid.Autoplan{
-							WhenModified: []string{"**/*.tf*"},
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 							Enabled:      false,
 						},
 						ApplyRequirements: []string{"approved"},
@@ -383,9 +420,10 @@ workflows:
 				},
 				Workflows: map[string]valid.Workflow{
 					"myworkflow": {
-						Name:  "myworkflow",
-						Apply: valid.DefaultApplyStage,
-						Plan:  valid.DefaultPlanStage,
+						Name:        "myworkflow",
+						Apply:       valid.DefaultApplyStage,
+						Plan:        valid.DefaultPlanStage,
+						PolicyCheck: valid.DefaultPolicyCheckStage,
 					},
 				},
 			},
@@ -414,7 +452,7 @@ workflows:
 						WorkflowName:     String("myworkflow"),
 						TerraformVersion: tfVersion,
 						Autoplan: valid.Autoplan{
-							WhenModified: []string{"**/*.tf*"},
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 							Enabled:      false,
 						},
 						ApplyRequirements: []string{"mergeable"},
@@ -422,9 +460,10 @@ workflows:
 				},
 				Workflows: map[string]valid.Workflow{
 					"myworkflow": {
-						Name:  "myworkflow",
-						Apply: valid.DefaultApplyStage,
-						Plan:  valid.DefaultPlanStage,
+						Name:        "myworkflow",
+						Apply:       valid.DefaultApplyStage,
+						Plan:        valid.DefaultPlanStage,
+						PolicyCheck: valid.DefaultPolicyCheckStage,
 					},
 				},
 			},
@@ -453,7 +492,7 @@ workflows:
 						WorkflowName:     String("myworkflow"),
 						TerraformVersion: tfVersion,
 						Autoplan: valid.Autoplan{
-							WhenModified: []string{"**/*.tf*"},
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 							Enabled:      false,
 						},
 						ApplyRequirements: []string{"mergeable", "approved"},
@@ -461,9 +500,10 @@ workflows:
 				},
 				Workflows: map[string]valid.Workflow{
 					"myworkflow": {
-						Name:  "myworkflow",
-						Apply: valid.DefaultApplyStage,
-						Plan:  valid.DefaultPlanStage,
+						Name:        "myworkflow",
+						Apply:       valid.DefaultApplyStage,
+						Plan:        valid.DefaultPlanStage,
+						PolicyCheck: valid.DefaultPolicyCheckStage,
 					},
 				},
 			},
@@ -501,7 +541,7 @@ projects:
 version: 3
 projects:
 - unknown: value`,
-			expErr: "yaml: unmarshal errors:\n  line 4: field unknown not found in struct raw.Project",
+			expErr: "yaml: unmarshal errors:\n  line 4: field unknown not found in type raw.Project",
 		},
 		{
 			description: "referencing workflow that doesn't exist",
@@ -568,7 +608,7 @@ projects:
 						Dir:       ".",
 						Workspace: "workspace",
 						Autoplan: valid.Autoplan{
-							WhenModified: []string{"**/*.tf*"},
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 							Enabled:      true,
 						},
 					},
@@ -577,7 +617,7 @@ projects:
 						Dir:       ".",
 						Workspace: "workspace",
 						Autoplan: valid.Autoplan{
-							WhenModified: []string{"**/*.tf*"},
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 							Enabled:      true,
 						},
 					},
@@ -597,6 +637,10 @@ workflows:
       steps:
       - init
       - plan
+    policy_check:
+      steps:
+      - init
+      - policy_check
     apply:
       steps:
       - plan # NOTE: we don't validate if they make sense
@@ -610,7 +654,7 @@ workflows:
 						Dir:       ".",
 						Workspace: "default",
 						Autoplan: valid.Autoplan{
-							WhenModified: []string{"**/*.tf*"},
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 							Enabled:      true,
 						},
 					},
@@ -625,6 +669,16 @@ workflows:
 								},
 								{
 									StepName: "plan",
+								},
+							},
+						},
+						PolicyCheck: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName: "init",
+								},
+								{
+									StepName: "policy_check",
 								},
 							},
 						},
@@ -658,6 +712,11 @@ workflows:
           extra_args:
           - arg1
           - arg2
+    policy_check:
+      steps:
+      - policy_check:
+          extra_args:
+          - arg1
     apply:
       steps:
       - plan:
@@ -673,7 +732,7 @@ workflows:
 						Dir:       ".",
 						Workspace: "default",
 						Autoplan: valid.Autoplan{
-							WhenModified: []string{"**/*.tf*"},
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 							Enabled:      true,
 						},
 					},
@@ -690,6 +749,14 @@ workflows:
 								{
 									StepName:  "plan",
 									ExtraArgs: []string{"arg1", "arg2"},
+								},
+							},
+						},
+						PolicyCheck: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName:  "policy_check",
+									ExtraArgs: []string{"arg1"},
 								},
 							},
 						},
@@ -720,6 +787,9 @@ workflows:
     plan:
       steps:
       - run: "echo \"plan hi\""
+    policy_check:
+      steps:
+      - run: "echo \"opa hi\""
     apply:
       steps:
       - run: echo apply "arg 2"
@@ -732,7 +802,7 @@ workflows:
 						Dir:       ".",
 						Workspace: "default",
 						Autoplan: valid.Autoplan{
-							WhenModified: []string{"**/*.tf*"},
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 							Enabled:      true,
 						},
 					},
@@ -748,11 +818,90 @@ workflows:
 								},
 							},
 						},
+						PolicyCheck: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName:   "run",
+									RunCommand: "echo \"opa hi\"",
+								},
+							},
+						},
 						Apply: valid.Stage{
 							Steps: []valid.Step{
 								{
 									StepName:   "run",
 									RunCommand: "echo apply \"arg 2\"",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			description: "env steps",
+			input: `
+version: 3
+projects:
+- dir: "."
+workflows:
+  default:
+    plan:
+      steps:
+      - env:
+          name: env_name
+          value: env_value
+    policy_check:
+      steps:
+      - env:
+          name: env_name
+          value: env_value
+    apply:
+      steps:
+      - env:
+          name: env_name
+          command: command and args
+`,
+			exp: valid.RepoCfg{
+				Version:      3,
+				ProjectLocks: true,
+				Projects: []valid.Project{
+					{
+						Dir:       ".",
+						Workspace: "default",
+						Autoplan: valid.Autoplan{
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
+							Enabled:      true,
+						},
+					},
+				},
+				Workflows: map[string]valid.Workflow{
+					"default": {
+						Name: "default",
+						Plan: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName:    "env",
+									EnvVarName:  "env_name",
+									EnvVarValue: "env_value",
+								},
+							},
+						},
+						PolicyCheck: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName:    "env",
+									EnvVarName:  "env_name",
+									EnvVarValue: "env_value",
+								},
+							},
+						},
+						Apply: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName:   "env",
+									EnvVarName: "env_name",
+									RunCommand: "command and args",
 								},
 							},
 						},
@@ -811,6 +960,12 @@ func TestParseGlobalCfg_NotExist(t *testing.T) {
 
 func TestParseGlobalCfg(t *testing.T) {
 	defaultCfg := valid.NewGlobalCfg(false, false, false)
+	preWorkflowHook := &valid.PreWorkflowHook{
+		StepName:   "run",
+		RunCommand: "custom workflow command",
+	}
+	preWorkflowHooks := []*valid.PreWorkflowHook{preWorkflowHook}
+
 	customWorkflow1 := valid.Workflow{
 		Name: "custom1",
 		Plan: valid.Stage{
@@ -828,6 +983,21 @@ func TestParseGlobalCfg(t *testing.T) {
 				},
 			},
 		},
+		PolicyCheck: valid.Stage{
+			Steps: []valid.Step{
+				{
+					StepName:   "run",
+					RunCommand: "custom command",
+				},
+				{
+					StepName:  "plan",
+					ExtraArgs: []string{"extra", "args"},
+				},
+				{
+					StepName: "policy_check",
+				},
+			},
+		},
 		Apply: valid.Stage{
 			Steps: []valid.Step{
 				{
@@ -841,6 +1011,8 @@ func TestParseGlobalCfg(t *testing.T) {
 		},
 	}
 
+	conftestVersion, _ := version.NewVersion("v1.0.0")
+
 	cases := map[string]struct {
 		input  string
 		expErr string
@@ -852,7 +1024,7 @@ func TestParseGlobalCfg(t *testing.T) {
 		},
 		"invalid fields": {
 			input:  "invalid: key",
-			expErr: "yaml: unmarshal errors:\n  line 1: field invalid not found in struct raw.GlobalCfg",
+			expErr: "yaml: unmarshal errors:\n  line 1: field invalid not found in type raw.GlobalCfg",
 		},
 		"no id specified": {
 			input: `repos:
@@ -899,9 +1071,10 @@ workflows:
 				Workflows: map[string]valid.Workflow{
 					"default": defaultCfg.Workflows["default"],
 					"name": {
-						Name:  "name",
-						Apply: valid.DefaultApplyStage,
-						Plan:  valid.DefaultPlanStage,
+						Name:        "name",
+						Apply:       valid.DefaultApplyStage,
+						Plan:        valid.DefaultPlanStage,
+						PolicyCheck: valid.DefaultPolicyCheckStage,
 					},
 				},
 			},
@@ -918,9 +1091,10 @@ workflows:
 				Workflows: map[string]valid.Workflow{
 					"default": defaultCfg.Workflows["default"],
 					"name": {
-						Name:  "name",
-						Apply: valid.DefaultApplyStage,
-						Plan:  valid.DefaultPlanStage,
+						Name:        "name",
+						Apply:       valid.DefaultApplyStage,
+						Plan:        valid.DefaultPlanStage,
+						PolicyCheck: valid.DefaultPolicyCheckStage,
 					},
 				},
 			},
@@ -938,9 +1112,10 @@ workflows:
 				Workflows: map[string]valid.Workflow{
 					"default": defaultCfg.Workflows["default"],
 					"name": {
-						Name:  "name",
-						Plan:  valid.DefaultPlanStage,
-						Apply: valid.DefaultApplyStage,
+						Name:        "name",
+						Plan:        valid.DefaultPlanStage,
+						PolicyCheck: valid.DefaultPolicyCheckStage,
+						Apply:       valid.DefaultApplyStage,
 					},
 				},
 			},
@@ -949,12 +1124,16 @@ workflows:
 			input: `
 repos:
 - id: github.com/owner/repo
+
   apply_requirements: [approved, mergeable]
+  pre_workflow_hooks:
+    - run: custom workflow command
   workflow: custom1
   allowed_overrides: [apply_requirements, workflow]
   allow_custom_workflows: true
 - id: /.*/
-
+  pre_workflow_hooks:
+    - run: custom workflow command
 workflows:
   custom1:
     plan:
@@ -963,10 +1142,22 @@ workflows:
       - init:
           extra_args: [extra, args]
       - plan
+    policy_check:
+      steps:
+      - run: custom command
+      - plan:
+          extra_args: [extra, args]
+      - policy_check
     apply:
       steps:
       - run: custom command
       - apply
+policies:
+  conftest_version: v1.0.0
+  policy_sets:
+    - name: good-policy
+      path: rel/path/to/policy
+      source: local
 `,
 			exp: valid.GlobalCfg{
 				Repos: []valid.Repo{
@@ -974,17 +1165,29 @@ workflows:
 					{
 						ID:                   "github.com/owner/repo",
 						ApplyRequirements:    []string{"approved", "mergeable"},
+						PreWorkflowHooks:     preWorkflowHooks,
 						Workflow:             &customWorkflow1,
 						AllowedOverrides:     []string{"apply_requirements", "workflow"},
 						AllowCustomWorkflows: Bool(true),
 					},
 					{
-						IDRegex: regexp.MustCompile(".*"),
+						IDRegex:          regexp.MustCompile(".*"),
+						PreWorkflowHooks: preWorkflowHooks,
 					},
 				},
 				Workflows: map[string]valid.Workflow{
 					"default": defaultCfg.Workflows["default"],
 					"custom1": customWorkflow1,
+				},
+				PolicySets: valid.PolicySets{
+					Version: conftestVersion,
+					PolicySets: []valid.PolicySet{
+						{
+							Name:   "good-policy",
+							Path:   "rel/path/to/policy",
+							Source: valid.LocalPolicySet,
+						},
+					},
 				},
 			},
 		},
@@ -997,7 +1200,8 @@ repos:
 				Repos: []valid.Repo{
 					defaultCfg.Repos[0],
 					{
-						IDRegex: regexp.MustCompile("github.com/"),
+						IDRegex:          regexp.MustCompile("github.com/"),
+						PreWorkflowHooks: []*valid.PreWorkflowHook{},
 					},
 				},
 				Workflows: map[string]valid.Workflow{
@@ -1015,8 +1219,9 @@ repos:
 				Repos: []valid.Repo{
 					defaultCfg.Repos[0],
 					{
-						ID:       "github.com/owner/repo",
-						Workflow: defaultCfg.Repos[0].Workflow,
+						ID:               "github.com/owner/repo",
+						PreWorkflowHooks: []*valid.PreWorkflowHook{},
+						Workflow:         defaultCfg.Repos[0].Workflow,
 					},
 				},
 				Workflows: map[string]valid.Workflow{
@@ -1024,7 +1229,66 @@ repos:
 				},
 			},
 		},
+		"redefine default workflow": {
+			input: `
+workflows:
+  default:
+    plan:
+      steps:
+      - run: custom
+    policy_check:
+      steps: []
+    apply:
+     steps: []
+`,
+			exp: valid.GlobalCfg{
+				Repos: []valid.Repo{
+					{
+						IDRegex:           regexp.MustCompile(".*"),
+						PreWorkflowHooks:  []*valid.PreWorkflowHook{},
+						ApplyRequirements: []string{},
+						Workflow: &valid.Workflow{
+							Name: "default",
+							Apply: valid.Stage{
+								Steps: nil,
+							},
+							PolicyCheck: valid.Stage{
+								Steps: nil,
+							},
+							Plan: valid.Stage{
+								Steps: []valid.Step{
+									{
+										StepName:   "run",
+										RunCommand: "custom",
+									},
+								},
+							},
+						},
+						AllowedWorkflows:     []string{},
+						AllowedOverrides:     []string{},
+						AllowCustomWorkflows: Bool(false),
+					},
+				},
+				Workflows: map[string]valid.Workflow{
+					"default": {
+						Name: "default",
+						Apply: valid.Stage{
+							Steps: nil,
+						},
+						Plan: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName:   "run",
+									RunCommand: "custom",
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
+
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			r := yaml.ParserValidator{}
@@ -1034,12 +1298,18 @@ repos:
 			Ok(t, ioutil.WriteFile(path, []byte(c.input), 0600))
 
 			act, err := r.ParseGlobalCfg(path, valid.NewGlobalCfg(false, false, false))
+
 			if c.expErr != "" {
 				expErr := strings.Replace(c.expErr, "<tmp>", path, -1)
 				ErrEquals(t, expErr, err)
 				return
 			}
 			Ok(t, err)
+
+			if !act.PolicySets.HasPolicies() {
+				c.exp.PolicySets = act.PolicySets
+			}
+
 			Equals(t, c.exp, act)
 			// Have to hand-compare regexes because Equals doesn't do it.
 			for i, actRepo := range act.Repos {
@@ -1072,6 +1342,17 @@ func TestParserValidator_ParseGlobalCfgJSON(t *testing.T) {
 				},
 			},
 		},
+		PolicyCheck: valid.Stage{
+			Steps: []valid.Step{
+				{
+					StepName: "plan",
+				},
+				{
+					StepName:   "run",
+					RunCommand: "custom policy_check",
+				},
+			},
+		},
 		Apply: valid.Stage{
 			Steps: []valid.Step{
 				{
@@ -1081,6 +1362,8 @@ func TestParserValidator_ParseGlobalCfgJSON(t *testing.T) {
 			},
 		},
 	}
+
+	conftestVersion, _ := version.NewVersion("v1.0.0")
 
 	cases := map[string]struct {
 		json   string
@@ -1102,6 +1385,7 @@ func TestParserValidator_ParseGlobalCfgJSON(t *testing.T) {
     {
       "id": "/.*/",
       "workflow": "custom",
+      "allowed_workflows": ["custom"],
       "apply_requirements": ["mergeable", "approved"],
       "allowed_overrides": ["workflow", "apply_requirements"],
       "allow_custom_workflows": true
@@ -1119,12 +1403,28 @@ func TestParserValidator_ParseGlobalCfgJSON(t *testing.T) {
           {"run": "custom plan"}
         ]
       },
+      "policy_check": {
+        "steps": [
+          "plan",
+          {"run": "custom policy_check"}
+        ]
+      },
       "apply": {
         "steps": [
           {"run": "my custom command"}
         ]
       }
     }
+  },
+  "policies": {
+    "conftest_version": "v1.0.0",
+    "policy_sets": [
+      {
+        "name": "good-policy",
+        "source": "local",
+        "path": "rel/path/to/policy"
+      }
+    ]
   }
 }
 `,
@@ -1134,13 +1434,16 @@ func TestParserValidator_ParseGlobalCfgJSON(t *testing.T) {
 					{
 						IDRegex:              regexp.MustCompile(".*"),
 						ApplyRequirements:    []string{"mergeable", "approved"},
+						PreWorkflowHooks:     []*valid.PreWorkflowHook{},
 						Workflow:             &customWorkflow,
+						AllowedWorkflows:     []string{"custom"},
 						AllowedOverrides:     []string{"workflow", "apply_requirements"},
 						AllowCustomWorkflows: Bool(true),
 					},
 					{
 						ID:                   "github.com/owner/repo",
 						IDRegex:              nil,
+						PreWorkflowHooks:     []*valid.PreWorkflowHook{},
 						ApplyRequirements:    nil,
 						AllowedOverrides:     nil,
 						AllowCustomWorkflows: nil,
@@ -1149,6 +1452,16 @@ func TestParserValidator_ParseGlobalCfgJSON(t *testing.T) {
 				Workflows: map[string]valid.Workflow{
 					"default": valid.NewGlobalCfg(false, false, false).Workflows["default"],
 					"custom":  customWorkflow,
+				},
+				PolicySets: valid.PolicySets{
+					Version: conftestVersion,
+					PolicySets: []valid.PolicySet{
+						{
+							Name:   "good-policy",
+							Path:   "rel/path/to/policy",
+							Source: valid.LocalPolicySet,
+						},
+					},
 				},
 			},
 		},
@@ -1162,6 +1475,11 @@ func TestParserValidator_ParseGlobalCfgJSON(t *testing.T) {
 				return
 			}
 			Ok(t, err)
+
+			if !cfg.PolicySets.HasPolicies() {
+				c.exp.PolicySets = cfg.PolicySets
+			}
+
 			Equals(t, c.exp, cfg)
 		})
 	}

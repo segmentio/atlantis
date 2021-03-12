@@ -23,21 +23,27 @@ import (
 	"strings"
 	"time"
 
-	version "github.com/hashicorp/go-version"
+	"github.com/hashicorp/go-version"
 	"github.com/runatlantis/atlantis/server/logging"
 
 	"github.com/pkg/errors"
 	"github.com/runatlantis/atlantis/server/events/yaml/valid"
 )
 
+const (
+	planfileSlashReplace = "::"
+)
+
 // Repo is a VCS repository.
 type Repo struct {
 	// FullName is the owner and repo name separated
-	// by a "/", ex. "runatlantis/atlantis", "gitlab/subgroup/atlantis", "Bitbucket Server/atlantis".
+	// by a "/", ex. "runatlantis/atlantis", "gitlab/subgroup/atlantis",
+	// "Bitbucket Server/atlantis", "azuredevops/project/atlantis".
 	FullName string
-	// Owner is just the repo owner, ex. "runatlantis" or "gitlab/subgroup".
-	// This may contain /'s in the case of GitLab subgroups.
-	// This may contain spaces in the case of Bitbucket Server.
+	// Owner is just the repo owner, ex. "runatlantis" or "gitlab/subgroup"
+	// or azuredevops/project. This may contain /'s in the case of GitLab
+	// subgroups or Azure DevOps Team Projects. This may contain spaces in
+	// the case of Bitbucket Server.
 	Owner string
 	// Name is just the repo name, ex. "atlantis". This will never have
 	// /'s in it.
@@ -71,7 +77,8 @@ func NewRepo(vcsHostType VCSHostType, repoFullName string, cloneURL string, vcsU
 		return Repo{}, errors.New("cloneURL can't be empty")
 	}
 
-	if !strings.HasSuffix(cloneURL, ".git") {
+	// Azure DevOps doesn't work with .git suffix on clone URLs
+	if !strings.HasSuffix(cloneURL, ".git") && vcsHostType != AzureDevops {
 		cloneURL += ".git"
 	}
 
@@ -84,7 +91,8 @@ func NewRepo(vcsHostType VCSHostType, repoFullName string, cloneURL string, vcsU
 	// We skip this check for Bitbucket Server because its format is different
 	// and because the caller in that case actually constructs the clone url
 	// from the repo name and so there's no point checking if they match.
-	if vcsHostType != BitbucketServer {
+	// Azure DevOps also does not require .git at the end of clone urls.
+	if vcsHostType != BitbucketServer && vcsHostType != AzureDevops {
 		expClonePath := fmt.Sprintf("/%s.git", repoFullName)
 		if expClonePath != cloneURLParsed.Path {
 			return Repo{}, fmt.Errorf("expected clone url to have path %q but had %q", expClonePath, cloneURLParsed.Path)
@@ -93,6 +101,7 @@ func NewRepo(vcsHostType VCSHostType, repoFullName string, cloneURL string, vcsU
 
 	// We url encode because we're using them in a URL and weird characters can
 	// mess up git.
+	cloneURL = strings.Replace(cloneURL, " ", "%20", -1)
 	escapedVCSUser := url.QueryEscape(vcsUser)
 	escapedVCSToken := url.QueryEscape(vcsToken)
 	auth := fmt.Sprintf("%s:%s@", escapedVCSUser, escapedVCSToken)
@@ -110,9 +119,9 @@ func NewRepo(vcsHostType VCSHostType, repoFullName string, cloneURL string, vcsU
 	if owner == "" || repo == "" {
 		return Repo{}, fmt.Errorf("invalid repo format %q, owner %q or repo %q was empty", repoFullName, owner, repo)
 	}
-	// Only GitLab repos can have /'s in their owners. This is for GitLab
-	// subgroups.
-	if strings.Contains(owner, "/") && vcsHostType != Gitlab {
+	// Only GitLab and AzureDevops repos can have /'s in their owners.
+	// This is for GitLab subgroups and Azure DevOps Team Projects.
+	if strings.Contains(owner, "/") && vcsHostType != Gitlab && vcsHostType != AzureDevops {
 		return Repo{}, fmt.Errorf("invalid repo format %q, owner %q should not contain any /'s", repoFullName, owner)
 	}
 	if strings.Contains(repo, "/") {
@@ -273,6 +282,7 @@ const (
 	Gitlab
 	BitbucketCloud
 	BitbucketServer
+	AzureDevops
 )
 
 func (h VCSHostType) String() string {
@@ -285,6 +295,8 @@ func (h VCSHostType) String() string {
 		return "BitbucketCloud"
 	case BitbucketServer:
 		return "BitbucketServer"
+	case AzureDevops:
+		return "AzureDevops"
 	}
 	return "<missing String() implementation>"
 }
@@ -292,6 +304,7 @@ func (h VCSHostType) String() string {
 // ProjectCommandContext defines the context for a plan or apply stage that will
 // be executed for a project.
 type ProjectCommandContext struct {
+	CommandName CommandName
 	// ApplyCmd is the command that users should run to apply this plan. If
 	// this is an apply then this will be empty.
 	ApplyCmd string
@@ -301,12 +314,12 @@ type ProjectCommandContext struct {
 	// AutomergeEnabled is true if automerge is enabled for the repo that this
 	// project is in.
 	AutomergeEnabled bool
-	// ParallelPlansEnabled is true if parallel plans is enabled for the repo that this
-	// project is in.
-	ParallelPlansEnabled bool
-	// ProjectLocksEnabled is true if project locks is enabled for the repo that this
-	// project is in.
-	ProjectLocksEnabled bool
+	// ParallelApplyEnabled is true if parallel apply is enabled for this project.
+	ParallelApplyEnabled bool
+	// ParallelPlanEnabled is true if parallel plan is enabled for this project.
+	ParallelPlanEnabled bool
+	// ParallelPolicyCheckEnabled is true if parallel policy_check is enabled for this project.
+	ParallelPolicyCheckEnabled bool
 	// AutoplanEnabled is true if autoplanning is enabled for this project.
 	AutoplanEnabled bool
 	// BaseRepo is the repository that the pull request will be merged into.
@@ -351,33 +364,46 @@ type ProjectCommandContext struct {
 	// Workspace is the Terraform workspace this project is in. It will always
 	// be set.
 	Workspace string
-	// Command is the command type being run in the current context: plan/apply
-	Command CommandName
+	// PolicySets represent the policies that are run on the plan as part of the
+	// policy check stage
+	PolicySets valid.PolicySets
 }
 
-// SplitRepoFullName splits a repo full name up into its owner and repo name
-// segments. If the repoFullName is malformed, may return empty strings
-// for owner or repo.
+// GetShowResultFileName returns the filename (not the path) to store the tf show result
+func (p ProjectCommandContext) GetShowResultFileName() string {
+	if p.ProjectName == "" {
+		return fmt.Sprintf("%s.json", p.Workspace)
+	}
+	projName := strings.Replace(p.ProjectName, "/", planfileSlashReplace, -1)
+	return fmt.Sprintf("%s-%s.json", projName, p.Workspace)
+}
+
+// SplitRepoFullName splits a repo full name up into its owner and repo
+// name segments. If the repoFullName is malformed, may return empty
+// strings for owner or repo.
 // Ex. runatlantis/atlantis => (runatlantis, atlantis)
 //     gitlab/subgroup/runatlantis/atlantis => (gitlab/subgroup/runatlantis, atlantis)
+//     azuredevops/project/atlantis => (azuredevops/project, atlantis)
 func SplitRepoFullName(repoFullName string) (owner string, repo string) {
 	lastSlashIdx := strings.LastIndex(repoFullName, "/")
 	if lastSlashIdx == -1 || lastSlashIdx == len(repoFullName)-1 {
 		return "", ""
 	}
+
 	return repoFullName[:lastSlashIdx], repoFullName[lastSlashIdx+1:]
 }
 
-// ProjectResult is the result of executing a plan/apply for a specific project.
+// ProjectResult is the result of executing a plan/policy_check/apply for a specific project.
 type ProjectResult struct {
-	Command      CommandName
-	RepoRelDir   string
-	Workspace    string
-	Error        error
-	Failure      string
-	PlanSuccess  *PlanSuccess
-	ApplySuccess string
-	ProjectName  string
+	Command            CommandName
+	RepoRelDir         string
+	Workspace          string
+	Error              error
+	Failure            string
+	PlanSuccess        *PlanSuccess
+	PolicyCheckSuccess *PolicyCheckSuccess
+	ApplySuccess       string
+	ProjectName        string
 }
 
 // CommitStatus returns the vcs commit status of this project result.
@@ -402,7 +428,13 @@ func (p ProjectResult) PlanStatus() ProjectPlanStatus {
 			return ErroredPlanStatus
 		}
 		return PlannedPlanStatus
-
+	case PolicyCheckCommand, ApprovePoliciesCommand:
+		if p.Error != nil {
+			return ErroredPolicyCheckStatus
+		} else if p.Failure != "" {
+			return ErroredPolicyCheckStatus
+		}
+		return PassedPolicyCheckStatus
 	case ApplyCommand:
 		if p.Error != nil {
 			return ErroredApplyStatus
@@ -417,7 +449,7 @@ func (p ProjectResult) PlanStatus() ProjectPlanStatus {
 
 // IsSuccessful returns true if this project result had no errors.
 func (p ProjectResult) IsSuccessful() bool {
-	return p.PlanSuccess != nil || p.ApplySuccess != ""
+	return p.PlanSuccess != nil || p.PolicyCheckSuccess != nil || p.ApplySuccess != ""
 }
 
 // PlanSuccess is the result of a successful plan.
@@ -430,6 +462,26 @@ type PlanSuccess struct {
 	RePlanCmd string
 	// ApplyCmd is the command that users should run to apply this plan.
 	ApplyCmd string
+	// HasDiverged is true if we're using the checkout merge strategy and the
+	// branch we're merging into has been updated since we cloned and merged
+	// it.
+	HasDiverged bool
+}
+
+// PolicyCheckSuccess is the result of a successful policy check run.
+type PolicyCheckSuccess struct {
+	// PolicyCheckOutput is the output from policy check binary(conftest|opa)
+	PolicyCheckOutput string
+	// LockURL is the full URL to the lock held by this policy check.
+	LockURL string
+	// RePlanCmd is the command that users should run to re-plan this project.
+	RePlanCmd string
+	// ApplyCmd is the command that users should run to apply this plan.
+	ApplyCmd string
+	// HasDiverged is true if we're using the checkout merge strategy and the
+	// branch we're merging into has been updated since we cloned and merged
+	// it.
+	HasDiverged bool
 }
 
 // PullStatus is the current status of a pull request that is in progress.
@@ -471,12 +523,21 @@ const (
 	// PlannedPlanStatus means that a plan has been successfully generated but
 	// not yet applied.
 	PlannedPlanStatus
-	// ErrorApplyStatus means that a plan has been generated but there was an
+	// ErroredApplyStatus means that a plan has been generated but there was an
 	// error while applying it.
 	ErroredApplyStatus
 	// AppliedPlanStatus means that a plan has been generated and applied
 	// successfully.
 	AppliedPlanStatus
+	// DiscardedPlanStatus means that there was an unapplied plan that was
+	// discarded due to a project being unlocked
+	DiscardedPlanStatus
+	// ErroredPolicyCheckStatus means that there was an unapplied plan that was
+	// discarded due to a project being unlocked
+	ErroredPolicyCheckStatus
+	// PassedPolicyCheckStatus means that there was an unapplied plan that was
+	// discarded due to a project being unlocked
+	PassedPolicyCheckStatus
 )
 
 // String returns a string representation of the status.
@@ -490,6 +551,12 @@ func (p ProjectPlanStatus) String() string {
 		return "apply_errored"
 	case AppliedPlanStatus:
 		return "applied"
+	case DiscardedPlanStatus:
+		return "plan_discarded"
+	case ErroredPolicyCheckStatus:
+		return "policy_check_errored"
+	case PassedPolicyCheckStatus:
+		return "policy_check_passed"
 	default:
 		panic("missing String() impl for ProjectPlanStatus")
 	}
@@ -503,6 +570,14 @@ const (
 	ApplyCommand CommandName = iota
 	// PlanCommand is a command to run terraform plan.
 	PlanCommand
+	// UnlockCommand is a command to discard previous plans as well as the atlantis locks.
+	UnlockCommand
+	// PolicyCheckCommand is a command to run conftest test.
+	PolicyCheckCommand
+	// ApprovePoliciesCommand is a command to approve policies with owner check
+	ApprovePoliciesCommand
+	// AutoplanCommand is a command to run terrafor plan on PR open/update if autoplan is enabled
+	AutoplanCommand
 	// Adding more? Don't forget to update String() below
 )
 
@@ -511,8 +586,33 @@ func (c CommandName) String() string {
 	switch c {
 	case ApplyCommand:
 		return "apply"
-	case PlanCommand:
+	case PlanCommand, AutoplanCommand:
 		return "plan"
+	case UnlockCommand:
+		return "unlock"
+	case PolicyCheckCommand:
+		return "policy_check"
+	case ApprovePoliciesCommand:
+		return "approve_policies"
 	}
 	return ""
+}
+
+// PreWorkflowHookCommandContext defines the context for a pre_worklfow_hooks that will
+// be executed before workflows.
+type PreWorkflowHookCommandContext struct {
+	// BaseRepo is the repository that the pull request will be merged into.
+	BaseRepo Repo
+	// HeadRepo is the repository that is getting merged into the BaseRepo.
+	// If the pull request branch is from the same repository then HeadRepo will
+	// be the same as BaseRepo.
+	HeadRepo Repo
+	// Log is a logger that's been set up for this context.
+	Log logging.SimpleLogging
+	// Pull is the pull request we're responding to.
+	Pull PullRequest
+	// User is the user that triggered this command.
+	User User
+	// Verbose is true when the user would like verbose output.
+	Verbose bool
 }

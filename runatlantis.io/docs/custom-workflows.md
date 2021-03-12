@@ -136,32 +136,43 @@ Atlantis supports running custom commands in place of the default Atlantis
 commands. We can use this functionality to enable
 [Terragrunt](https://github.com/gruntwork-io/terragrunt).
 
+You can either use your repo's `atlantis.yaml` file or the Atlantis server's `repos.yaml` file.
+
 Given a directory structure:
 ```
 .
-├── live
-│   ├── prod
-│   │   └── terraform.tfvars
-│   └── staging
-│       └── terraform.tfvars
-└── modules
-    └── ...
+└── live
+    ├── prod
+    │   └── terragrunt.hcl
+    └── staging
+        └── terragrunt.hcl
 ```
 
-You would define a custom workflow:
+If using the server `repos.yaml` file, you would use the following config:
+
 ```yaml
-# repos.yaml or atlantis.yaml
+# repos.yaml
+# Specify TERRAGRUNT_TFPATH environment variable to accomodate setting --default-tf-version
+repos:
+- id: "/.*/"
+  workflow: terragrunt
 workflows:
   terragrunt:
     plan:
       steps:
-      - run: terragrunt plan -no-color -out $PLANFILE
+      - env:
+          name: TERRAGRUNT_TFPATH
+          command: 'echo "terraform${ATLANTIS_TERRAFORM_VERSION}"'
+      - run: terragrunt plan -no-color -out=$PLANFILE
     apply:
       steps:
+      - env:
+          name: TERRAGRUNT_TFPATH
+          command: 'echo "terraform${ATLANTIS_TERRAFORM_VERSION}"'
       - run: terragrunt apply -no-color $PLANFILE
 ```
 
-Which you would then reference in your repo-level `atlantis.yaml`:
+If using the repo's `atlantis.yaml` file you would use the following config:
 ```yaml
 version: 3
 projects:
@@ -169,12 +180,33 @@ projects:
   workflow: terragrunt
 - dir: live/prod
   workflow: terragrunt
+workflows:
+  terragrunt:
+    plan:
+      steps:
+      - env:
+          name: TERRAGRUNT_TFPATH
+          command: 'echo "terraform${ATLANTIS_TERRAFORM_VERSION}"'
+      - run: terragrunt plan -no-color -out $PLANFILE
+    apply:
+      steps:
+      - env:
+          name: TERRAGRUNT_TFPATH
+          command: 'echo "terraform${ATLANTIS_TERRAFORM_VERSION}"'
+      - run: terragrunt apply -no-color $PLANFILE
 ```
+
+**NOTE:** If using the repo's `atlantis.yaml` file, you will need to specify each directory that is a Terragrunt project.
+
 
 ::: warning
 Atlantis will need to have the `terragrunt` binary in its PATH.
 If you're using Docker you can build your own image, see [Customization](/docs/deployment.html#customization).
 :::
+
+If you don't want to create/manage the repo's `atlantis.yaml` file yourself, you can use the tool [terragrunt-atlantis-config](https://github.com/transcend-io/terragrunt-atlantis-config) to generate it.
+
+The `terragrunt-atlantis-config` tool is a community project and not maintained by the Atlantis team.
 
 ### Running custom commands
 Atlantis supports running completely custom commands. In this example, we want to run
@@ -321,8 +353,10 @@ Or a custom command
   * `PROJECT_NAME` - Name of the project configured in `atlantis.yaml`. If no project name is configured this will be an empty string.
   * `PULL_NUM` - Pull request number or ID, ex. `2`.
   * `PULL_AUTHOR` - Username of the pull request author, ex. `acme-user`.
+  * `REPO_REL_DIR` - The relative path of the project in the repository. For example if your project is in `dir1/dir2/` then this will be set to `"dir1/dir2"`. If your project is at the root this will be `"."`.
   * `USER_NAME` - Username of the VCS user running command, ex. `acme-user`. During an autoplan, the user will be the Atlantis API user, ex. `atlantis`.
-  * `COMMENT_ARGS` - Any additional flags passed in the comment on the pull request separated by commas, ex. `atlantis plan -- arg1 arg2` will result in `COMMENT_ARGS=arg1,arg2`.
+  * `COMMENT_ARGS` - Any additional flags passed in the comment on the pull request. Flags are separated by commas and
+  every character is escaped, ex. `atlantis plan -- arg1 arg2` will result in `COMMENT_ARGS=\a\r\g\1,\a\r\g\2`.
 * A custom command will only terminate if all output file descriptors are closed.
 Therefore a custom command can only be sent to the background (e.g. for an SSH tunnel during
 the terraform run) when its output is redirected to a different location. For example, Atlantis
@@ -332,3 +366,26 @@ the redirect, the script would block the Atlantis workflow.
 * If a workflow step returns a non-zero exit code, the workflow will stop. 
 :::
 
+#### Environment Variable `env` Command
+The `env` command allows you to set environment variables that will be available
+to all steps defined **below** the `env` step.
+
+You can set hard coded values via the `value` key, or set dynamic values via
+the `command` key which allows you to run any command and uses the output
+as the environment variable value.
+```yaml
+- env:
+    name: ENV_NAME
+    value: hard-coded-value
+- env:
+    name: ENV_NAME_2
+    command: 'echo "dynamic-value-$(date)"'
+```
+| Key             | Type                               | Default | Required | Description                                                                                                                                         |
+|-----------------|------------------------------------|---------|----------|-----------------------------------------------------------------------------------------------------------------------------------------------------|
+| env | map[`name` -> string, `value` -> string, `command` -> string] | none    | no       | Set environment variables for subsequent steps |
+
+::: tip Notes
+* `env` `command`'s can use any of the built-in environment variables available
+  to `run` commands. 
+:::

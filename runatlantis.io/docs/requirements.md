@@ -11,6 +11,7 @@ Atlantis integrates with the following Git hosts:
 * GitLab (public, private or enterprise)
 * Bitbucket Cloud aka bitbucket.org (public or private)
 * Bitbucket Server aka Stash
+* Azure DevOps
 
 ## Terraform State
 Atlantis supports all backend types **except for local state**. We don't support local state
@@ -55,7 +56,7 @@ Atlantis supports any Terraform repository structure, for example:
         └── ...
 ```
 With modules, if you want `project1` automatically planned when `module1` is modified
-you need to create an `atlantis.yaml` file. See [atlantis.yaml Use Cases](repo-level-atlantis-yaml.html#configuring-autoplanning) for more details.
+you need to create an `atlantis.yaml` file. See [atlantis.yaml Use Cases](repo-level-atlantis-yaml.html#configuring-planning) for more details.
 
 ###  Terraform Workspaces
 *See [Terraform's docs](https://www.terraform.io/docs/state/workspaces.html) if you are unfamiliar with workspaces.*

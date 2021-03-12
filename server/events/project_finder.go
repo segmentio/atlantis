@@ -17,6 +17,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/runatlantis/atlantis/server/events/yaml/valid"
@@ -40,6 +41,9 @@ type ProjectFinder interface {
 	DetermineProjectsViaConfig(log *logging.SimpleLogger, modifiedFiles []string, config valid.RepoCfg, absRepoDir string) ([]valid.Project, error)
 }
 
+// ignoredFilenameFragments contains filename fragments to ignore while looking at changes
+var ignoredFilenameFragments = []string{"terraform.tfstate", "terraform.tfstate.backup", "tflint.hcl"}
+
 // DefaultProjectFinder implements ProjectFinder.
 type DefaultProjectFinder struct{}
 
@@ -51,7 +55,7 @@ func (p *DefaultProjectFinder) DetermineProjects(log *logging.SimpleLogger, modi
 	if len(modifiedTerraformFiles) == 0 {
 		return projects
 	}
-	log.Info("filtered modified files to %d .tf files: %v",
+	log.Info("filtered modified files to %d .tf or terragrunt.hcl files: %v",
 		len(modifiedTerraformFiles), modifiedTerraformFiles)
 
 	var dirs []string
@@ -82,12 +86,25 @@ func (p *DefaultProjectFinder) DetermineProjectsViaConfig(log *logging.SimpleLog
 	var projects []valid.Project
 	for _, project := range config.Projects {
 		log.Debug("checking if project at dir %q workspace %q was modified", project.Dir, project.Workspace)
-		// Prepend project dir to when modified patterns because the patterns
-		// are relative to the project dirs but our list of modified files is
-		// relative to the repo root.
 		var whenModifiedRelToRepoRoot []string
 		for _, wm := range project.Autoplan.WhenModified {
-			whenModifiedRelToRepoRoot = append(whenModifiedRelToRepoRoot, filepath.Join(project.Dir, wm))
+			wm = strings.TrimSpace(wm)
+			// An exclusion uses a '!' at the beginning. If it's there, we need
+			// to remove it, then add in the project path, then add it back.
+			exclusion := false
+			if wm != "" && wm[0] == '!' {
+				wm = wm[1:]
+				exclusion = true
+			}
+
+			// Prepend project dir to when modified patterns because the patterns
+			// are relative to the project dirs but our list of modified files is
+			// relative to the repo root.
+			wmRelPath := filepath.Join(project.Dir, wm)
+			if exclusion {
+				wmRelPath = "!" + wmRelPath
+			}
+			whenModifiedRelToRepoRoot = append(whenModifiedRelToRepoRoot, wmRelPath)
 		}
 		pm, err := fileutils.NewPatternMatcher(whenModifiedRelToRepoRoot)
 		if err != nil {
@@ -104,11 +121,22 @@ func (p *DefaultProjectFinder) DetermineProjectsViaConfig(log *logging.SimpleLog
 			}
 			if match {
 				log.Debug("file %q matched pattern", file)
-				_, err := os.Stat(filepath.Join(absRepoDir, project.Dir))
-				if err == nil {
-					projects = append(projects, project)
+				// If we're checking using an atlantis.yaml file we downloaded
+				// directly from the repo (when doing a no-clone check) then
+				// absRepoDir will be empty. Since we didn't clone the repo
+				// yet we can't do this check. If there was a file modified
+				// in a deleted directory then when we finally do clone the repo
+				// we'll call this function again and then we'll detect the
+				// directory was deleted.
+				if absRepoDir != "" {
+					_, err := os.Stat(filepath.Join(absRepoDir, project.Dir))
+					if err == nil {
+						projects = append(projects, project)
+					} else {
+						log.Debug("project at dir %q not included because dir does not exist", project.Dir)
+					}
 				} else {
-					log.Debug("project at dir %q not included because dir does not exist", project.Dir)
+					projects = append(projects, project)
 				}
 				break
 			}
@@ -120,19 +148,20 @@ func (p *DefaultProjectFinder) DetermineProjectsViaConfig(log *logging.SimpleLog
 // filterToTerraform filters non-terraform files from files.
 func (p *DefaultProjectFinder) filterToTerraform(files []string) []string {
 	var filtered []string
+	fileNameRe, _ := regexp.Compile(`^.*(\.tf|\.tfvars|\.tfvars.json)$`)
+
 	for _, fileName := range files {
-		// Filter out tfstate files since they usually checked in by accident
-		// and regardless, they don't affect a plan.
-		if !p.isStatefile(fileName) && strings.Contains(fileName, ".tf") {
+		if !p.shouldIgnore(fileName) && (fileNameRe.MatchString(fileName) || filepath.Base(fileName) == "terragrunt.hcl") {
 			filtered = append(filtered, fileName)
 		}
 	}
+
 	return filtered
 }
 
-// isStatefile returns true if fileName is a terraform statefile or backup.
-func (p *DefaultProjectFinder) isStatefile(fileName string) bool {
-	for _, s := range []string{"terraform.tfstate", "terraform.tfstate.backup"} {
+// shouldIgnore returns true if we shouldn't trigger a plan on changes to this file.
+func (p *DefaultProjectFinder) shouldIgnore(fileName string) bool {
+	for _, s := range ignoredFilenameFragments {
 		if strings.Contains(fileName, s) {
 			return true
 		}

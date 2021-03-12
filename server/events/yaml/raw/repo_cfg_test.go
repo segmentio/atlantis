@@ -43,7 +43,7 @@ func TestConfig_UnmarshalYAML(t *testing.T) {
 				Projects:  nil,
 				Workflows: nil,
 			},
-			expErr: "yaml: unmarshal errors:\n  line 1: field invalid not found in struct raw.RepoCfg",
+			expErr: "yaml: unmarshal errors:\n  line 1: field invalid not found in type raw.RepoCfg",
 		},
 		{
 			description: "version set to 2",
@@ -112,18 +112,8 @@ func TestConfig_UnmarshalYAML(t *testing.T) {
 			expErr: "yaml: unmarshal errors:\n  line 2: cannot unmarshal !!str `notabool` into bool",
 		},
 		{
-			description: "parallel plans not a boolean",
-			input:       "version: 3\nparallel_plans: notabool",
-			exp: raw.RepoCfg{
-				Version:   nil,
-				Projects:  nil,
-				Workflows: nil,
-			},
-			expErr: "yaml: unmarshal errors:\n  line 2: cannot unmarshal !!str `notabool` into bool",
-		},
-		{
-			description: "project_locks not a boolean",
-			input:       "version: 3\nproject_locks: notabool",
+			description: "parallel apply not a boolean",
+			input:       "version: 3\nparallel_apply: notabool",
 			exp: raw.RepoCfg{
 				Version:   nil,
 				Projects:  nil,
@@ -136,8 +126,8 @@ func TestConfig_UnmarshalYAML(t *testing.T) {
 			input: `
 version: 3
 automerge: true
-parallel_plans: true
-project_locks: false
+parallel_apply: true
+parallel_plan: false
 projects:
 - dir: mydir
   workspace: myworkspace
@@ -151,13 +141,15 @@ workflows:
   default:
     plan:
       steps: []
+    policy_check:
+      steps: []
     apply:
      steps: []`,
 			exp: raw.RepoCfg{
 				Version:       Int(3),
 				Automerge:     Bool(true),
-				ParallelPlans: Bool(true),
-				ProjectLocks:  Bool(false),
+				ParallelApply: Bool(true),
+				ParallelPlan:  Bool(false),
 				Projects: []raw.Project{
 					{
 						Dir:              String("mydir"),
@@ -177,6 +169,9 @@ workflows:
 							Steps: []raw.Step{},
 						},
 						Plan: &raw.Stage{
+							Steps: []raw.Step{},
+						},
+						PolicyCheck: &raw.Stage{
 							Steps: []raw.Step{},
 						},
 					},
@@ -262,70 +257,111 @@ func TestConfig_ToValid(t *testing.T) {
 			},
 		},
 		{
-			description: "automerge, parallel_plans and project_locks ommitted",
+			description: "automerge and parallel_apply omitted",
 			input: raw.RepoCfg{
-				Version: Int(2),
+				Version:      Int(2),
+				ProjectLocks: Bool(false),
 			},
 			exp: valid.RepoCfg{
 				Version:       2,
 				Automerge:     false,
-				ParallelPlans: false,
-				ProjectLocks:  true,
+				ParallelApply: false,
 				Workflows:     map[string]valid.Workflow{},
 			},
 		},
 		{
-			description: "automerge, parallel_plans and project_locks true",
+			description: "automerge and parallel_apply true",
 			input: raw.RepoCfg{
 				Version:       Int(2),
 				Automerge:     Bool(true),
-				ParallelPlans: Bool(true),
-				ProjectLocks:  Bool(true),
+				ParallelApply: Bool(true),
+				ProjectLocks:  Bool(false),
 			},
 			exp: valid.RepoCfg{
 				Version:       2,
 				Automerge:     true,
-				ParallelPlans: true,
-				ProjectLocks:  true,
+				ParallelApply: true,
 				Workflows:     map[string]valid.Workflow{},
 			},
 		},
 		{
-			description: "automerge, parallel_plans and project_locks false",
+			description: "automerge and parallel_apply false",
 			input: raw.RepoCfg{
 				Version:       Int(2),
 				Automerge:     Bool(false),
-				ParallelPlans: Bool(false),
+				ParallelApply: Bool(false),
 				ProjectLocks:  Bool(false),
 			},
 			exp: valid.RepoCfg{
 				Version:       2,
 				Automerge:     false,
-				ParallelPlans: false,
-				ProjectLocks:  false,
+				ParallelApply: false,
 				Workflows:     map[string]valid.Workflow{},
+			},
+		},
+		{
+			description: "parallel_plans true but parallel_plan unset",
+			input: raw.RepoCfg{
+				Version:       Int(2),
+				Automerge:     Bool(false),
+				ParallelPlans: Bool(true),
+				ProjectLocks:  Bool(false),
+			},
+			exp: valid.RepoCfg{
+				Version:             2,
+				Automerge:           false,
+				ParallelPlan:        true,
+				ParallelPolicyCheck: true,
+				Workflows:           map[string]valid.Workflow{},
+			},
+		},
+		{
+			description: "parallel_plans unset but parallel_plan true",
+			input: raw.RepoCfg{
+				Version:      Int(2),
+				Automerge:    Bool(false),
+				ParallelPlan: Bool(true),
+				ProjectLocks: Bool(false),
+			},
+			exp: valid.RepoCfg{
+				Version:             2,
+				Automerge:           false,
+				ParallelPlan:        true,
+				ParallelPolicyCheck: true,
+				Workflows:           map[string]valid.Workflow{},
 			},
 		},
 		{
 			description: "only plan stage set",
 			input: raw.RepoCfg{
-				Version: Int(2),
+				Version:      Int(2),
+				ProjectLocks: Bool(false),
 				Workflows: map[string]raw.Workflow{
 					"myworkflow": {
-						Plan:  &raw.Stage{},
-						Apply: nil,
+						Plan:        &raw.Stage{},
+						Apply:       nil,
+						PolicyCheck: nil,
 					},
 				},
 			},
 			exp: valid.RepoCfg{
 				Version:       2,
 				Automerge:     false,
-				ParallelPlans: false,
-				ProjectLocks:  true,
+				ParallelApply: false,
 				Workflows: map[string]valid.Workflow{
 					"myworkflow": {
 						Name: "myworkflow",
 						Plan: valid.DefaultPlanStage,
+						PolicyCheck: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName: "show",
+								},
+								{
+									StepName: "policy_check",
+								},
+							},
+						},
 						Apply: valid.Stage{
 							Steps: []valid.Step{
 								{
@@ -342,7 +378,7 @@ func TestConfig_ToValid(t *testing.T) {
 			input: raw.RepoCfg{
 				Version:       Int(2),
 				Automerge:     Bool(true),
-				ParallelPlans: Bool(true),
+				ParallelApply: Bool(true),
 				ProjectLocks:  Bool(false),
 				Workflows: map[string]raw.Workflow{
 					"myworkflow": {
@@ -350,6 +386,13 @@ func TestConfig_ToValid(t *testing.T) {
 							Steps: []raw.Step{
 								{
 									Key: String("apply"),
+								},
+							},
+						},
+						PolicyCheck: &raw.Stage{
+							Steps: []raw.Step{
+								{
+									Key: String("policy_check"),
 								},
 							},
 						},
@@ -371,7 +414,7 @@ func TestConfig_ToValid(t *testing.T) {
 			exp: valid.RepoCfg{
 				Version:       2,
 				Automerge:     true,
-				ParallelPlans: true,
+				ParallelApply: true,
 				ProjectLocks:  false,
 				Workflows: map[string]valid.Workflow{
 					"myworkflow": {
@@ -380,6 +423,13 @@ func TestConfig_ToValid(t *testing.T) {
 							Steps: []valid.Step{
 								{
 									StepName: "apply",
+								},
+							},
+						},
+						PolicyCheck: valid.Stage{
+							Steps: []valid.Step{
+								{
+									StepName: "policy_check",
 								},
 							},
 						},
@@ -397,7 +447,7 @@ func TestConfig_ToValid(t *testing.T) {
 						Dir:       "mydir",
 						Workspace: "default",
 						Autoplan: valid.Autoplan{
-							WhenModified: []string{"**/*.tf*"},
+							WhenModified: []string{"**/*.tf*", "**/terragrunt.hcl"},
 							Enabled:      true,
 						},
 					},

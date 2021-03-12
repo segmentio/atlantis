@@ -16,6 +16,10 @@ All flags can be specified as environment variables.
 1. Prefix with `ATLANTIS_` => `ATLANTIS_GH_USER`
 
 ::: warning NOTE
+To set a boolean flag use `true` or `false` as the value.
+:::
+
+::: warning NOTE
 The flag `--atlantis-url` is set by the environment variable `ATLANTIS_ATLANTIS_URL` **NOT** `ATLANTIS_URL`.
 :::
 
@@ -86,6 +90,8 @@ Values are chosen in this order:
 * ### `--atlantis-url`
   ```bash
   atlantis server --atlantis-url="https://my-domain.com:9090/basepath"
+  # or
+  ATLANTIS_ATLANTIS_URL=https://my-domain.com:9090/basepath
   ```
   Specify the URL that Atlantis is accessible from. Used in the Atlantis UI
   and in links from pull request comments. Defaults to `http://$(hostname):$port`
@@ -97,6 +103,38 @@ Values are chosen in this order:
   ```
   Automatically merge pull requests after all plans have been successfully applied.
   Defaults to `false`. See [Automerging](automerging.html) for more details.
+
+* ### `--azuredevops-webhook-password`
+  ```bash
+  atlantis server --azuredevops-webhook-password="password123"
+  ```
+  Azure DevOps basic authentication password for inbound webhooks (see
+  https://docs.microsoft.com/en-us/azure/devops/service-hooks/authorize?view=azure-devops).
+  SECURITY WARNING: If not specified, Atlantis won't be able to validate that the
+  incoming webhook call came from your Azure DevOps org. This means that an
+  attacker could spoof calls to Atlantis and cause it to perform malicious
+  actions. Should be specified via the ATLANTIS_AZUREDEVOPS_BASIC_AUTH environment
+  variable.
+
+* ### `--azuredevops-webhook-user`
+  ```bash
+  atlantis server --azuredevops-webhook-user="username@example.com"
+  ```
+  Azure DevOps basic authentication username for inbound webhooks. Can also be specified via the ATLANTIS_AZUREDEVOPS_WEBHOOK_USER
+  environment variable.
+
+* ### `--azuredevops-token`
+  ```bash
+  atlantis server --azuredevops-token="username@example.com"
+  ```
+  Azure DevOps token of API user. Can also be specified via the ATLANTIS_AZUREDEVOPS_TOKEN
+  environment variable.
+
+* ### `--azuredevops-user`
+  ```bash
+  atlantis server --azuredevops-user="username@example.com"
+  ```
+  Azure DevOps username of API user.
 
 * ### `--bitbucket-base-url`
   ```bash
@@ -163,12 +201,30 @@ Values are chosen in this order:
   Terraform version to default to. Will download to `<data-dir>/bin/terraform<version>`
   if not in `PATH`. See [Terraform Versions](terraform-versions.html) for more details.
 
+* ### `--disable-apply`
+  ```bash
+  atlantis server --disable-apply
+  ```
+  Disable all \"atlantis apply\" commands, regardless of which flags are passed with it.
+
 * ### `--disable-apply-all`
   ```bash
   atlantis server --disable-apply-all
   ```
   Disable \"atlantis apply\" command so a specific project/workspace/directory has to
   be specified for applies.
+
+* ### `--disable-autoplan`
+  ```bash
+  atlantis server --disable-autoplan
+  ```
+  Disable atlantis auto planning
+
+* ### `--disable-repo-locking`
+  ```bash
+  atlantis server --disable-repo-locking
+  ```
+  Stops atlantis locking projects and or workspaces when running terraform
 
 * ### `--gh-hostname`
   ```bash
@@ -197,12 +253,46 @@ Values are chosen in this order:
   # or (recommended)
   ATLANTIS_GH_WEBHOOK_SECRET='secret' atlantis server
   ```
-  Secret used to validate GitHub webhooks (see [https://developer.github.com/webhooks/securing/](https://developer.github.com/webhooks/securing/)).
+  Secret used to validate GitHub webhooks (see [https://developer.github.com/webhooks/securing/](https://docs.github.com/en/free-pro-team@latest/developers/webhooks-and-events/securing-your-webhooks)).
 
   ::: warning SECURITY WARNING
   If not specified, Atlantis won't be able to validate that the incoming webhook call came from GitHub.
   This means that an attacker could spoof calls to Atlantis and cause it to perform malicious actions.
   :::
+
+- ### `--gh-org`
+  ```bash
+  atlantis server --gh-org="myorgname"
+  ```
+  GitHub organization name. Set to enable creating a private Github app for this organization.
+
+- ### `--gh-app-id`
+  ```bash
+  atlantis server --gh-app-id="00000"
+  ```
+  GitHub app ID. If set, GitHub authentication will be performed as [an installation](https://developer.github.com/v3/apps/installations/).
+
+  ::: tip
+  A GitHub app can be created by starting Atlantis first, then pointing your browser at
+
+  ```
+  $(hostname)/github-app/setup
+  ```
+
+  You'll be redirected to GitHub to create a new app, and will then be redirected to
+
+  ```
+  $(hostname)/github-app/exchange-code?code=some-code
+  ```
+
+  After which Atlantis will display your new app's credentials: your app's ID, its generated `--gh-webhook-secret` and the contents of the file for `--gh-app-key-file`. Update your Atlantis config accordingly, and restart the server.
+  :::
+
+- ### `--gh-app-key-file`
+  ```bash
+  atlantis server --gh-app-key-file="path/to/app-key.pem"
+  ```
+  Path to a GitHub App PEM encoded private key file. If set, GitHub authentication will be performed as [an installation](https://developer.github.com/v3/apps/installations/).
 
 * ### `--gitlab-hostname`
   ```bash
@@ -227,7 +317,7 @@ Values are chosen in this order:
 
 * ### `--gitlab-webhook-secret`
   ```bash
-  atlantis server --gh-webhook-secret="secret"
+  atlantis server --gitlab-webhook-secret="secret"
   # or (recommended)
   ATLANTIS_GITLAB_WEBHOOK_SECRET='secret' atlantis server
   ```
@@ -244,11 +334,24 @@ Values are chosen in this order:
   ```
   View help.
 
+* ### `--hide-prev-plan-comments`
+  ```bash
+  atlantis server --hide-prev-plan-comments
+  ```
+  Hide previous plan comments to declutter PRs. This is only supported in
+  GitHub currently.
+
 * ### `--log-level`
   ```bash
   atlantis server --log-level="<debug|info|warn|error>"
   ```
   Log level. Defaults to `info`.
+
+* ### `--parallel-pool-size`
+  ```bash
+  atlantis server --parallel-pool-size=100
+  ```
+  Max size of the wait group that runs parallel plans and applies (if enabled). Defaults to `15`
 
 * ### `--port`
   ```bash
@@ -297,27 +400,35 @@ Values are chosen in this order:
   :::
 
 * ### `--repo-whitelist`
+  <Badge text="Deprecated" type="warn"/>
+  Deprecated for `--repo-allowlist`.
+* ### `--repo-allowlist`
   ```bash
   # NOTE: Use single quotes to avoid shell expansion of *.
-  atlantis server --repo-whitelist='github.com/myorg/*'
+  atlantis server --repo-allowlist='github.com/myorg/*'
   ```
-  Atlantis requires you to specify a whitelist of repositories it will accept webhooks from.
+  Atlantis requires you to specify an allowlist of repositories it will accept webhooks from.
 
   Notes:
   * Accepts a comma separated list, ex. `definition1,definition2`
   * Format is `{hostname}/{owner}/{repo}`, ex. `github.com/runatlantis/atlantis`
   * `*` matches any characters, ex. `github.com/runatlantis/*` will match all repos in the runatlantis organization
   * For Bitbucket Server: `{hostname}` is the domain without scheme and port, `{owner}` is the name of the project (not the key), and `{repo}` is the repo name
+    * User (not project) repositories take on the format: `{hostname}/{full name}/{repo}` (e.g., `bitbucket.example.com/Jane Doe/myatlantis` for username `jdoe` and full name `Jane Doe`, which is not very intuitive)
+  * For Azure DevOps the allowlist takes one of two forms: `{owner}.visualstudio.com/{project}/{repo}` or `dev.azure.com/{owner}/{project}/{repo}`
+  * Microsoft is in the process of changing Azure DevOps to the latter form, so it may be safest to always specify both formats in your repo allowlist for each repository until the change is complete.
 
   Examples:
-  * Whitelist `myorg/repo1` and `myorg/repo2` on `github.com`
-    * `--repo-whitelist=github.com/myorg/repo1,github.com/myorg/repo2`
-  * Whitelist all repos under `myorg` on `github.com`
-    * `--repo-whitelist='github.com/myorg/*'`
-  * Whitelist all repos in my GitHub Enterprise installation
-    * `--repo-whitelist='github.yourcompany.com/*'`
-  * Whitelist all repositories
-    * `--repo-whitelist='*'`
+  * Allowlist `myorg/repo1` and `myorg/repo2` on `github.com`
+    * `--repo-allowlist=github.com/myorg/repo1,github.com/myorg/repo2`
+  * Allowlist all repos under `myorg` on `github.com`
+    * `--repo-allowlist='github.com/myorg/*'`
+  * Allowlist all repos in my GitHub Enterprise installation
+    * `--repo-allowlist='github.yourcompany.com/*'`
+  * Allowlist all repos under `myorg` project `myproject` on Azure DevOps
+    * `--repo-allowlist='myorg.visualstudio.com/myproject/*,dev.azure.com/myorg/myproject/*'`
+  * Allowlist all repositories
+    * `--repo-allowlist='*'`
 
 * ### `--require-approval`
   <Badge text="Deprecated" type="warn"/>
@@ -353,16 +464,32 @@ Values are chosen in this order:
   ```
   Or use `--repo-config-json='{"repos":[{"id":"/.*/", "apply_requirements":["mergeable"]}]}'` instead.
 
-* ### `--silence-whitelist-errors`
+* ### `--silence-fork-pr-errors`
   ```bash
-  atlantis server --silence-whitelist-errors
+  atlantis server --silence-fork-pr-errors
   ```
-  Some users use the `--repo-whitelist` flag to control which repos Atlantis
+  Normally, if Atlantis receives a pull request webhook from a fork and --allow-fork-prs is not set,
+  it will comment back with an error. This flag disables that commenting.
+
+* ### `--silence-whitelist-errors`
+  <Badge text="Deprecated" type="warn"/>
+  Deprecated for `--silence-allowlist-errors`.
+* ### `--silence-allowlist-errors`
+  ```bash
+  atlantis server --silence-allowlist-errors
+  ```
+  Some users use the `--repo-allowlist` flag to control which repos Atlantis
   responds to. Normally, if Atlantis receives a pull request webhook from a repo not listed
-  in the whitelist, it will comment back with an error. This flag disables that commenting.
+  in the allowlist, it will comment back with an error. This flag disables that commenting.
 
   Some users find this useful because they prefer to add the Atlantis webhook
   at an organization level rather than on each repo.
+
+* ### `--skip-clone-no-changes`
+  ```bash
+  atlantis server --skip-clone-no-changes
+  ```
+  `--skip-clone-no-changes` will skip cloning the repo during autoplan if there are no changes to Terraform projects. This will only apply for GitHub and GitLab and only for repos that have `atlantis.yaml` file. Defaults to `false`.
 
 * ### `--slack-token`
   ```bash
@@ -385,7 +512,15 @@ Values are chosen in this order:
   atlantis server --ssl-cert-file="/etc/ssl/private/my-cert.key"
   ```
   File containing x509 private key matching `--ssl-cert-file`.
- 
+
+* ### `--tf-download-url`
+  ```bash
+  atlantis server --tf-download-url="https://releases.company.com"
+  ```
+  An alternative URL to download Terraform versions if they are missing. Useful in an airgapped
+  environment where releases.hashicorp.com is not available. Directory structure of the custom
+  endpoint should match that of releases.hashicorp.com.
+
 * ### `--tfe-hostname`
   ```bash
   atlantis server --tfe-hostname="my-terraform-enterprise.company.com"
@@ -399,6 +534,27 @@ Values are chosen in this order:
   ```bash
   atlantis server --tfe-token="xxx.atlasv1.yyy"
   # or (recommended)
-  ATLANTIS_TFE_TOKEN='xxx.atlasv1.yyy' atlantis server
+  ATLANTIS_TFE_TOKEN='xxx.atlasv1.yyy'
   ```
-  A token for Terraform Cloud/Terraform Enteprise integration. See [Terraform Cloud](terraform-cloud.html) for more details.
+  A token for Terraform Cloud/Terraform Enterprise integration. See [Terraform Cloud](terraform-cloud.html) for more details.
+
+* ### `--vcs-status-name`
+  ```bash
+  atlantis server --vcs-status-name="atlantis-dev"
+  ```
+  Name used to identify Atlantis when updating a pull request status. Defaults to `atlantis`.
+
+  This is useful when running multiple Atlantis servers against a single repository so you can
+  give each Atlantis server its own unique name to prevent the statuses clashing.
+
+* ### `--write-git-creds`
+  ```bash
+  atlantis server --write-git-creds
+  # or
+  ATLANTIS_WRITE_GIT_CREDS=true
+  ```
+  Write out a .git-credentials file with the provider user and token to allow
+  cloning private modules over HTTPS or SSH. See [here](https://git-scm.com/docs/git-credential-store) for more information.
+  ::: warning SECURITY WARNING
+  This does write secrets to disk and should only be enabled in a secure environment.
+  :::

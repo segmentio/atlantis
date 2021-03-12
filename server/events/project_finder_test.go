@@ -53,6 +53,7 @@ func setupTmpRepos(t *testing.T) {
 	Ok(t, err)
 	files := []string{
 		"non-tf",
+		".tflint.hcl",
 		"terraform.tfstate.backup",
 		"project1/main.tf",
 		"project1/terraform.tfstate",
@@ -92,6 +93,7 @@ func setupTmpRepos(t *testing.T) {
 	// env/
 	//   staging.tfvars
 	//   production.tfvars
+	//   global-env-config.auto.tfvars.json
 	envDir, err = ioutil.TempDir("", "")
 	Ok(t, err)
 	err = os.MkdirAll(filepath.Join(envDir, "env"), 0700)
@@ -119,7 +121,13 @@ func TestDetermineProjects(t *testing.T) {
 		},
 		{
 			"Should ignore non .tf files and return an empty list",
-			[]string{"non-tf"},
+			[]string{"non-tf", "non.tf.suffix"},
+			nil,
+			nestedModules1,
+		},
+		{
+			"Should ignore .tflint.hcl files and return an empty list",
+			[]string{".tflint.hcl", "project1/.tflint.hcl"},
 			nil,
 			nestedModules1,
 		},
@@ -189,6 +197,18 @@ func TestDetermineProjects(t *testing.T) {
 			[]string{},
 			"",
 		},
+		{
+			"Should not ignore terragrunt.hcl files",
+			[]string{"terragrunt.hcl"},
+			[]string{"."},
+			nestedModules2,
+		},
+		{
+			"Should find terragrunt.hcl file inside a nested directory",
+			[]string{"project1/terragrunt.hcl"},
+			[]string{"project1"},
+			nestedModules1,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.description, func(t *testing.T) {
@@ -226,6 +246,7 @@ func TestDefaultProjectFinder_DetermineProjectsViaConfig(t *testing.T) {
 	// main.tf
 	// project1/
 	//   main.tf
+	//   terraform.tfvars.json
 	// project2/
 	//   main.tf
 	//   terraform.tfvars
@@ -235,7 +256,8 @@ func TestDefaultProjectFinder_DetermineProjectsViaConfig(t *testing.T) {
 	tmpDir, cleanup := DirStructure(t, map[string]interface{}{
 		"main.tf": nil,
 		"project1": map[string]interface{}{
-			"main.tf": nil,
+			"main.tf":               nil,
+			"terraform.tfvars.json": nil,
 		},
 		"project2": map[string]interface{}{
 			"main.tf":          nil,
@@ -383,6 +405,54 @@ func TestDefaultProjectFinder_DetermineProjectsViaConfig(t *testing.T) {
 			},
 			modified:     []string{"project2/terraform.tfvars"},
 			expProjPaths: []string{"project2"},
+		},
+		{
+			description: "file excluded",
+			config: valid.RepoCfg{
+				Projects: []valid.Project{
+					{
+						Dir: "project1",
+						Autoplan: valid.Autoplan{
+							Enabled:      true,
+							WhenModified: []string{"*.tf", "!exclude-me.tf"},
+						},
+					},
+				},
+			},
+			modified:     []string{"project1/exclude-me.tf"},
+			expProjPaths: nil,
+		},
+		{
+			description: "some files excluded and others included",
+			config: valid.RepoCfg{
+				Projects: []valid.Project{
+					{
+						Dir: "project1",
+						Autoplan: valid.Autoplan{
+							Enabled:      true,
+							WhenModified: []string{"*.tf", "!exclude-me.tf"},
+						},
+					},
+				},
+			},
+			modified:     []string{"project1/exclude-me.tf", "project1/include-me.tf"},
+			expProjPaths: []string{"project1"},
+		},
+		{
+			description: "multiple dirs excluded",
+			config: valid.RepoCfg{
+				Projects: []valid.Project{
+					{
+						Dir: "project1",
+						Autoplan: valid.Autoplan{
+							Enabled:      true,
+							WhenModified: []string{"**/*.tf", "!subdir1/*", "!subdir2/*"},
+						},
+					},
+				},
+			},
+			modified:     []string{"project1/subdir1/main.tf", "project1/subdir2/main.tf"},
+			expProjPaths: nil,
 		},
 	}
 

@@ -14,6 +14,8 @@ import (
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/events/vcs"
 	. "github.com/runatlantis/atlantis/testing"
+
+	"github.com/shurcooL/githubv4"
 )
 
 // GetModifiedFiles should make multiple requests if more than one page
@@ -57,7 +59,7 @@ func TestGithubClient_GetModifiedFiles(t *testing.T) {
 
 	testServerURL, err := url.Parse(testServer.URL)
 	Ok(t, err)
-	client, err := vcs.NewGithubClient(testServerURL.Host, "user", "pass")
+	client, err := vcs.NewGithubClient(testServerURL.Host, &vcs.GithubUserCredentials{"user", "pass"}, nil)
 	Ok(t, err)
 	defer disableSSLVerification()()
 
@@ -112,7 +114,7 @@ func TestGithubClient_GetModifiedFilesMovedFile(t *testing.T) {
 
 	testServerURL, err := url.Parse(testServer.URL)
 	Ok(t, err)
-	client, err := vcs.NewGithubClient(testServerURL.Host, "user", "pass")
+	client, err := vcs.NewGithubClient(testServerURL.Host, &vcs.GithubUserCredentials{"user", "pass"}, nil)
 	Ok(t, err)
 	defer disableSSLVerification()()
 
@@ -131,6 +133,192 @@ func TestGithubClient_GetModifiedFilesMovedFile(t *testing.T) {
 	})
 	Ok(t, err)
 	Equals(t, []string{"new/filename.txt", "previous/filename.txt"}, files)
+}
+
+func TestGithubClient_PaginatesComments(t *testing.T) {
+	calls := 0
+	issueResps := []string{
+		`[
+	{"node_id": "1", "body": "asd\nplan\nasd", "user": {"login": "someone-else"}},
+	{"node_id": "2", "body": "asd plan\nasd", "user": {"login": "user"}}
+]`,
+		`[
+	{"node_id": "3", "body": "asd", "user": {"login": "someone-else"}},
+	{"node_id": "4", "body": "asdasd", "user": {"login": "someone-else"}}
+]`,
+		`[
+	{"node_id": "5", "body": "asd plan", "user": {"login": "someone-else"}},
+	{"node_id": "6", "body": "asd\nplan", "user": {"login": "user"}}
+]`,
+		`[
+	{"node_id": "7", "body": "asd", "user": {"login": "user"}},
+	{"node_id": "8", "body": "asd plan \n asd", "user": {"login": "user"}}
+]`,
+	}
+	minimizeResp := "{}"
+	type graphQLCall struct {
+		Variables struct {
+			Input githubv4.MinimizeCommentInput `json:"input"`
+		} `json:"variables"`
+	}
+	gotMinimizeCalls := make([]graphQLCall, 0, 2)
+	testServer := httptest.NewTLSServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method + " " + r.RequestURI {
+			case "POST /api/graphql":
+				defer r.Body.Close() // nolint: errcheck
+				body, err := ioutil.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read body error: %v", err)
+					http.Error(w, "server error", http.StatusInternalServerError)
+					return
+				}
+				call := graphQLCall{}
+				err = json.Unmarshal(body, &call)
+				if err != nil {
+					t.Errorf("parse body error: %v", err)
+					http.Error(w, "server error", http.StatusInternalServerError)
+					return
+				}
+				gotMinimizeCalls = append(gotMinimizeCalls, call)
+				w.Write([]byte(minimizeResp)) // nolint: errcheck
+				return
+			default:
+				if r.Method != "GET" || !strings.HasPrefix(r.RequestURI, "/api/v3/repos/owner/repo/issues/123/comments") {
+					t.Errorf("got unexpected request at %q", r.RequestURI)
+					http.Error(w, "not found", http.StatusNotFound)
+					return
+				}
+				if (calls + 1) < len(issueResps) {
+					w.Header().Add(
+						"Link",
+						fmt.Sprintf(
+							`<http://%s/api/v3/repos/owner/repo/issues/123/comments?page=%d&per_page=100>; rel="next"`,
+							r.Host,
+							calls+1,
+						),
+					)
+				}
+				w.Write([]byte(issueResps[calls])) // nolint: errcheck
+				calls++
+			}
+		}),
+	)
+
+	testServerURL, err := url.Parse(testServer.URL)
+	Ok(t, err)
+
+	client, err := vcs.NewGithubClient(testServerURL.Host, &vcs.GithubUserCredentials{"user", "pass"}, nil)
+	Ok(t, err)
+	defer disableSSLVerification()()
+
+	err = client.HidePrevPlanComments(
+		models.Repo{
+			FullName:          "owner/repo",
+			Owner:             "owner",
+			Name:              "repo",
+			CloneURL:          "",
+			SanitizedCloneURL: "",
+			VCSHost: models.VCSHost{
+				Hostname: "github.com",
+				Type:     models.Github,
+			},
+		},
+		123,
+	)
+	Ok(t, err)
+	Equals(t, 2, len(gotMinimizeCalls))
+	Equals(t, "2", gotMinimizeCalls[0].Variables.Input.SubjectID)
+	Equals(t, "8", gotMinimizeCalls[1].Variables.Input.SubjectID)
+	Equals(t, githubv4.ReportedContentClassifiersOutdated, gotMinimizeCalls[0].Variables.Input.Classifier)
+	Equals(t, githubv4.ReportedContentClassifiersOutdated, gotMinimizeCalls[1].Variables.Input.Classifier)
+}
+
+func TestGithubClient_HideOldComments(t *testing.T) {
+	// Only comment 6 should be minimized, because it's by the same Atlantis bot user
+	// and it has "plan" in the first line of the comment body.
+	issueResp := `[
+	{"node_id": "1", "body": "asd\nplan\nasd", "user": {"login": "someone-else"}},
+	{"node_id": "2", "body": "asd plan\nasd", "user": {"login": "someone-else"}},
+	{"node_id": "3", "body": "asdasdasd\nasdasdasd", "user": {"login": "someone-else"}},
+	{"node_id": "4", "body": "asdasdasd\nasdasdasd", "user": {"login": "user"}},
+	{"node_id": "5", "body": "asd\nplan\nasd", "user": {"login": "user"}},
+	{"node_id": "6", "body": "asd plan\nasd", "user": {"login": "user"}},
+	{"node_id": "7", "body": "asdasdasd", "user": {"login": "user"}},
+	{"node_id": "8", "body": "asd plan\nasd", "user": {"login": "user"}},
+	{"node_id": "9", "body": "Continued Plan from previous comment\nasd", "user": {"login": "user"}}
+]`
+	minimizeResp := "{}"
+	type graphQLCall struct {
+		Variables struct {
+			Input githubv4.MinimizeCommentInput `json:"input"`
+		} `json:"variables"`
+	}
+	gotMinimizeCalls := make([]graphQLCall, 0, 1)
+	testServer := httptest.NewTLSServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method + " " + r.RequestURI {
+			// This gets the pull request's comments.
+			case "GET /api/v3/repos/owner/repo/issues/123/comments?direction=asc&sort=created":
+				w.Write([]byte(issueResp)) // nolint: errcheck
+				return
+			case "POST /api/graphql":
+				if accept, has := r.Header["Accept"]; !has || accept[0] != "application/vnd.github.queen-beryl-preview+json" {
+					t.Error("missing preview header")
+					http.Error(w, "bad request", http.StatusBadRequest)
+					return
+				}
+				defer r.Body.Close() // nolint: errcheck
+				body, err := ioutil.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read body error: %v", err)
+					http.Error(w, "server error", http.StatusInternalServerError)
+					return
+				}
+				call := graphQLCall{}
+				err = json.Unmarshal(body, &call)
+				if err != nil {
+					t.Errorf("parse body error: %v", err)
+					http.Error(w, "server error", http.StatusInternalServerError)
+					return
+				}
+				gotMinimizeCalls = append(gotMinimizeCalls, call)
+				w.Write([]byte(minimizeResp)) // nolint: errcheck
+				return
+			default:
+				t.Errorf("got unexpected request at %q", r.RequestURI)
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+		}),
+	)
+
+	testServerURL, err := url.Parse(testServer.URL)
+	Ok(t, err)
+
+	client, err := vcs.NewGithubClient(testServerURL.Host, &vcs.GithubUserCredentials{"user", "pass"}, nil)
+	Ok(t, err)
+	defer disableSSLVerification()()
+
+	err = client.HidePrevPlanComments(
+		models.Repo{
+			FullName:          "owner/repo",
+			Owner:             "owner",
+			Name:              "repo",
+			CloneURL:          "",
+			SanitizedCloneURL: "",
+			VCSHost: models.VCSHost{
+				Hostname: "github.com",
+				Type:     models.Github,
+			},
+		},
+		123,
+	)
+	Ok(t, err)
+	Equals(t, 3, len(gotMinimizeCalls))
+	Equals(t, "6", gotMinimizeCalls[0].Variables.Input.SubjectID)
+	Equals(t, "9", gotMinimizeCalls[2].Variables.Input.SubjectID)
+	Equals(t, githubv4.ReportedContentClassifiersOutdated, gotMinimizeCalls[0].Variables.Input.Classifier)
 }
 
 func TestGithubClient_UpdateStatus(t *testing.T) {
@@ -173,7 +361,7 @@ func TestGithubClient_UpdateStatus(t *testing.T) {
 
 			testServerURL, err := url.Parse(testServer.URL)
 			Ok(t, err)
-			client, err := vcs.NewGithubClient(testServerURL.Host, "user", "pass")
+			client, err := vcs.NewGithubClient(testServerURL.Host, &vcs.GithubUserCredentials{"user", "pass"}, nil)
 			Ok(t, err)
 			defer disableSSLVerification()()
 
@@ -193,6 +381,91 @@ func TestGithubClient_UpdateStatus(t *testing.T) {
 			Ok(t, err)
 		})
 	}
+}
+
+func TestGithubClient_PullIsApproved(t *testing.T) {
+	respTemplate := `[
+		{
+			"id": %d,
+			"node_id": "MDE3OlB1bGxSZXF1ZXN0UmV2aWV3ODA=",
+			"user": {
+			  "login": "octocat",
+			  "id": 1,
+			  "node_id": "MDQ6VXNlcjE=",
+			  "avatar_url": "https://github.com/images/error/octocat_happy.gif",
+			  "gravatar_id": "",
+			  "url": "https://api.github.com/users/octocat",
+			  "html_url": "https://github.com/octocat",
+			  "followers_url": "https://api.github.com/users/octocat/followers",
+			  "following_url": "https://api.github.com/users/octocat/following{/other_user}",
+			  "gists_url": "https://api.github.com/users/octocat/gists{/gist_id}",
+			  "starred_url": "https://api.github.com/users/octocat/starred{/owner}{/repo}",
+			  "subscriptions_url": "https://api.github.com/users/octocat/subscriptions",
+			  "organizations_url": "https://api.github.com/users/octocat/orgs",
+			  "repos_url": "https://api.github.com/users/octocat/repos",
+			  "events_url": "https://api.github.com/users/octocat/events{/privacy}",
+			  "received_events_url": "https://api.github.com/users/octocat/received_events",
+			  "type": "User",
+			  "site_admin": false
+			},
+			"body": "Here is the body for the review.",
+			"commit_id": "ecdd80bb57125d7ba9641ffaa4d7d2c19d3f3091",
+			"state": "CHANGES_REQUESTED",
+			"html_url": "https://github.com/octocat/Hello-World/pull/12#pullrequestreview-%d",
+			"pull_request_url": "https://api.github.com/repos/octocat/Hello-World/pulls/12",
+			"_links": {
+			  "html": {
+				"href": "https://github.com/octocat/Hello-World/pull/12#pullrequestreview-%d"
+			  },
+			  "pull_request": {
+				"href": "https://api.github.com/repos/octocat/Hello-World/pulls/12"
+			  }
+			}
+		  }
+]`
+	firstResp := fmt.Sprintf(respTemplate, 80, 80, 80)
+	secondResp := fmt.Sprintf(respTemplate, 81, 81, 81)
+	testServer := httptest.NewTLSServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.RequestURI {
+			// The first request should hit this URL.
+			case "/api/v3/repos/owner/repo/pulls/1/reviews?per_page=300":
+				// We write a header that means there's an additional page.
+				w.Header().Add("Link", `<https://api.github.com/resource?page=2>; rel="next",
+      <https://api.github.com/resource?page=2>; rel="last"`)
+				w.Write([]byte(firstResp)) // nolint: errcheck
+				return
+				// The second should hit this URL.
+			case "/api/v3/repos/owner/repo/pulls/1/reviews?page=2&per_page=300":
+				w.Write([]byte(secondResp)) // nolint: errcheck
+			default:
+				t.Errorf("got unexpected request at %q", r.RequestURI)
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+		}))
+
+	testServerURL, err := url.Parse(testServer.URL)
+	Ok(t, err)
+	client, err := vcs.NewGithubClient(testServerURL.Host, &vcs.GithubUserCredentials{"user", "pass"}, nil)
+	Ok(t, err)
+	defer disableSSLVerification()()
+
+	approved, err := client.PullIsApproved(models.Repo{
+		FullName:          "owner/repo",
+		Owner:             "owner",
+		Name:              "repo",
+		CloneURL:          "",
+		SanitizedCloneURL: "",
+		VCSHost: models.VCSHost{
+			Type:     models.Github,
+			Hostname: "github.com",
+		},
+	}, models.PullRequest{
+		Num: 1,
+	})
+	Ok(t, err)
+	Equals(t, false, approved)
 }
 
 func TestGithubClient_PullIsMergeable(t *testing.T) {
@@ -265,7 +538,7 @@ func TestGithubClient_PullIsMergeable(t *testing.T) {
 				}))
 			testServerURL, err := url.Parse(testServer.URL)
 			Ok(t, err)
-			client, err := vcs.NewGithubClient(testServerURL.Host, "user", "pass")
+			client, err := vcs.NewGithubClient(testServerURL.Host, &vcs.GithubUserCredentials{"user", "pass"}, nil)
 			Ok(t, err)
 			defer disableSSLVerification()()
 
@@ -327,7 +600,7 @@ func TestGithubClient_MergePullHandlesError(t *testing.T) {
 					case "/api/v3/repos/owner/repo/pulls/1/merge":
 						body, err := ioutil.ReadAll(r.Body)
 						Ok(t, err)
-						exp := "{\"commit_message\":\"[Atlantis] Automatically merging after successful apply\",\"merge_method\":\"merge\"}\n"
+						exp := "{\"merge_method\":\"merge\"}\n"
 						Equals(t, exp, string(body))
 						var resp string
 						if c.code == 200 {
@@ -347,7 +620,7 @@ func TestGithubClient_MergePullHandlesError(t *testing.T) {
 
 			testServerURL, err := url.Parse(testServer.URL)
 			Ok(t, err)
-			client, err := vcs.NewGithubClient(testServerURL.Host, "user", "pass")
+			client, err := vcs.NewGithubClient(testServerURL.Host, &vcs.GithubUserCredentials{"user", "pass"}, nil)
 			Ok(t, err)
 			defer disableSSLVerification()()
 
@@ -448,12 +721,10 @@ func TestGithubClient_MergePullCorrectMethod(t *testing.T) {
 						Ok(t, err)
 						defer r.Body.Close() // nolint: errcheck
 						type bodyJSON struct {
-							CommitMessage string `json:"commit_message"`
-							MergeMethod   string `json:"merge_method"`
+							MergeMethod string `json:"merge_method"`
 						}
 						expBody := bodyJSON{
-							CommitMessage: "[Atlantis] Automatically merging after successful apply",
-							MergeMethod:   c.expMethod,
+							MergeMethod: c.expMethod,
 						}
 						expBytes, err := json.Marshal(expBody)
 						Ok(t, err)
@@ -470,7 +741,7 @@ func TestGithubClient_MergePullCorrectMethod(t *testing.T) {
 
 			testServerURL, err := url.Parse(testServer.URL)
 			Ok(t, err)
-			client, err := vcs.NewGithubClient(testServerURL.Host, "user", "pass")
+			client, err := vcs.NewGithubClient(testServerURL.Host, &vcs.GithubUserCredentials{"user", "pass"}, nil)
 			Ok(t, err)
 			defer disableSSLVerification()()
 
@@ -494,6 +765,15 @@ func TestGithubClient_MergePullCorrectMethod(t *testing.T) {
 	}
 }
 
+func TestGithubClient_MarkdownPullLink(t *testing.T) {
+	client, err := vcs.NewGithubClient("hostname", &vcs.GithubUserCredentials{"user", "pass"}, nil)
+	Ok(t, err)
+	pull := models.PullRequest{Num: 1}
+	s, _ := client.MarkdownPullLink(pull)
+	exp := "#1"
+	Equals(t, exp, s)
+}
+
 // disableSSLVerification disables ssl verification for the global http client
 // and returns a function to be called in a defer that will re-enable it.
 func disableSSLVerification() func() {
@@ -503,4 +783,117 @@ func disableSSLVerification() func() {
 	return func() {
 		http.DefaultTransport.(*http.Transport).TLSClientConfig = orig
 	}
+}
+
+func TestGithubClient_SplitComments(t *testing.T) {
+	type githubComment struct {
+		Body string `json:"body"`
+	}
+	githubComments := make([]githubComment, 0, 1)
+
+	testServer := httptest.NewTLSServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+			switch r.Method + " " + r.RequestURI {
+			case "POST /api/v3/repos/runatlantis/atlantis/issues/1/comments":
+				defer r.Body.Close() // nolint: errcheck
+				body, err := ioutil.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read body error: %v", err)
+					http.Error(w, "server error", http.StatusInternalServerError)
+					return
+				}
+				requestBody := githubComment{}
+				err = json.Unmarshal(body, &requestBody)
+				if err != nil {
+					t.Errorf("parse body error: %v", err)
+					http.Error(w, "server error", http.StatusInternalServerError)
+					return
+				}
+				githubComments = append(githubComments, requestBody)
+				return
+			default:
+				t.Errorf("got unexpected request at %q", r.RequestURI)
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+		}))
+
+	testServerURL, err := url.Parse(testServer.URL)
+	Ok(t, err)
+	client, err := vcs.NewGithubClient(testServerURL.Host, &vcs.GithubUserCredentials{"user", "pass"}, nil)
+	Ok(t, err)
+	defer disableSSLVerification()()
+	pull := models.PullRequest{Num: 1}
+	repo := models.Repo{
+		FullName:          "runatlantis/atlantis",
+		Owner:             "runatlantis",
+		Name:              "atlantis",
+		CloneURL:          "",
+		SanitizedCloneURL: "",
+		VCSHost: models.VCSHost{
+			Type:     models.Github,
+			Hostname: "github.com",
+		},
+	}
+	// create an extra long string
+	comment := strings.Repeat("a", 65537)
+	err = client.CreateComment(repo, pull.Num, comment, models.PlanCommand.String())
+	Ok(t, err)
+	err = client.CreateComment(repo, pull.Num, comment, "")
+	Ok(t, err)
+
+	body := strings.Split(githubComments[1].Body, "\n")
+	firstSplit := strings.ToLower(body[0])
+	body = strings.Split(githubComments[3].Body, "\n")
+	secondSplit := strings.ToLower(body[0])
+
+	Equals(t, 4, len(githubComments))
+	Assert(t, strings.Contains(firstSplit, models.PlanCommand.String()), fmt.Sprintf("comment should contain the command name but was %q", firstSplit))
+	Assert(t, strings.Contains(secondSplit, "continued from previous comment"), fmt.Sprintf("comment should contain no reference to the command name but was %q", secondSplit))
+}
+
+// Test that we retry the get pull request call if it 404s.
+func TestGithubClient_Retry404(t *testing.T) {
+	var numCalls = 0
+
+	testServer := httptest.NewTLSServer(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+			switch r.Method + " " + r.RequestURI {
+			case "GET /api/v3/repos/runatlantis/atlantis/pulls/1":
+				defer r.Body.Close() // nolint: errcheck
+				numCalls++
+				if numCalls < 3 {
+					w.WriteHeader(404)
+				} else {
+					w.WriteHeader(200)
+				}
+				return
+			default:
+				t.Errorf("got unexpected request at %q", r.RequestURI)
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+		}))
+
+	testServerURL, err := url.Parse(testServer.URL)
+	Ok(t, err)
+	client, err := vcs.NewGithubClient(testServerURL.Host, &vcs.GithubUserCredentials{"user", "pass"}, nil)
+	Ok(t, err)
+	defer disableSSLVerification()()
+	repo := models.Repo{
+		FullName:          "runatlantis/atlantis",
+		Owner:             "runatlantis",
+		Name:              "atlantis",
+		CloneURL:          "",
+		SanitizedCloneURL: "",
+		VCSHost: models.VCSHost{
+			Type:     models.Github,
+			Hostname: "github.com",
+		},
+	}
+	_, err = client.GetPullRequest(repo, 1)
+	Ok(t, err)
+	Equals(t, 3, numCalls)
 }

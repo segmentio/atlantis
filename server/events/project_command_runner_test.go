@@ -17,12 +17,15 @@ import (
 	"os"
 	"testing"
 
+	"github.com/hashicorp/go-version"
 	. "github.com/petergtz/pegomock"
 	"github.com/runatlantis/atlantis/server/events"
 	"github.com/runatlantis/atlantis/server/events/mocks"
 	"github.com/runatlantis/atlantis/server/events/mocks/matchers"
 	"github.com/runatlantis/atlantis/server/events/models"
+	"github.com/runatlantis/atlantis/server/events/runtime"
 	mocks2 "github.com/runatlantis/atlantis/server/events/runtime/mocks"
+	tmocks "github.com/runatlantis/atlantis/server/events/terraform/mocks"
 	"github.com/runatlantis/atlantis/server/events/yaml/valid"
 	"github.com/runatlantis/atlantis/server/logging"
 	. "github.com/runatlantis/atlantis/testing"
@@ -35,6 +38,7 @@ func TestDefaultProjectCommandRunner_Plan(t *testing.T) {
 	mockPlan := mocks.NewMockStepRunner()
 	mockApply := mocks.NewMockStepRunner()
 	mockRun := mocks.NewMockCustomStepRunner()
+	realEnv := runtime.EnvStepRunner{}
 	mockWorkingDir := mocks.NewMockWorkingDir()
 	mockLocker := mocks.NewMockProjectLocker()
 
@@ -45,6 +49,7 @@ func TestDefaultProjectCommandRunner_Plan(t *testing.T) {
 		PlanStepRunner:      mockPlan,
 		ApplyStepRunner:     mockApply,
 		RunStepRunner:       mockRun,
+		EnvStepRunner:       &realEnv,
 		PullApprovedChecker: nil,
 		WorkingDir:          mockWorkingDir,
 		Webhooks:            nil,
@@ -56,10 +61,9 @@ func TestDefaultProjectCommandRunner_Plan(t *testing.T) {
 	When(mockWorkingDir.Clone(
 		matchers.AnyPtrToLoggingSimpleLogger(),
 		matchers.AnyModelsRepo(),
-		matchers.AnyModelsRepo(),
 		matchers.AnyModelsPullRequest(),
 		AnyString(),
-	)).ThenReturn(repoDir, nil)
+	)).ThenReturn(repoDir, false, nil)
 	When(mockLocker.TryLock(
 		matchers.AnyPtrToLoggingSimpleLogger(),
 		matchers.AnyModelsPullRequest(),
@@ -71,10 +75,17 @@ func TestDefaultProjectCommandRunner_Plan(t *testing.T) {
 		LockKey:      "lock-key",
 	}, nil)
 
+	expEnvs := map[string]string{
+		"name": "value",
+	}
 	ctx := models.ProjectCommandContext{
-		Log:                 logging.NewNoopLogger(),
-		ProjectLocksEnabled: true,
+		Log: logging.NewNoopLogger(),
 		Steps: []valid.Step{
+			{
+				StepName:    "env",
+				EnvVarName:  "name",
+				EnvVarValue: "value",
+			},
 			{
 				StepName: "run",
 			},
@@ -88,33 +99,32 @@ func TestDefaultProjectCommandRunner_Plan(t *testing.T) {
 				StepName: "init",
 			},
 		},
-		Workspace:  "default",
-		RepoRelDir: ".",
-		Command:    models.PlanCommand,
+		Workspace:   "default",
+		RepoRelDir:  ".",
+		CommandName: models.PlanCommand,
 	}
 	// Each step will output its step name.
-	When(mockInit.Run(ctx, nil, repoDir)).ThenReturn("init", nil)
-	When(mockPlan.Run(ctx, nil, repoDir)).ThenReturn("plan", nil)
-	When(mockApply.Run(ctx, nil, repoDir)).ThenReturn("apply", nil)
-	When(mockRun.Run(ctx, "", repoDir)).ThenReturn("run", nil)
-
+	When(mockInit.Run(ctx, nil, repoDir, expEnvs)).ThenReturn("init", nil)
+	When(mockPlan.Run(ctx, nil, repoDir, expEnvs)).ThenReturn("plan", nil)
+	When(mockApply.Run(ctx, nil, repoDir, expEnvs)).ThenReturn("apply", nil)
+	When(mockRun.Run(ctx, "", repoDir, expEnvs)).ThenReturn("run", nil)
 	res := runner.Plan(ctx)
 
 	Assert(t, res.PlanSuccess != nil, "exp plan success")
 	Equals(t, "https://lock-key", res.PlanSuccess.LockURL)
 	Equals(t, "run\napply\nplan\ninit", res.PlanSuccess.TerraformOutput)
 
-	expSteps := []string{"run", "apply", "plan", "init"}
+	expSteps := []string{"run", "apply", "plan", "init", "env"}
 	for _, step := range expSteps {
 		switch step {
 		case "init":
-			mockInit.VerifyWasCalledOnce().Run(ctx, nil, repoDir)
+			mockInit.VerifyWasCalledOnce().Run(ctx, nil, repoDir, expEnvs)
 		case "plan":
-			mockPlan.VerifyWasCalledOnce().Run(ctx, nil, repoDir)
+			mockPlan.VerifyWasCalledOnce().Run(ctx, nil, repoDir, expEnvs)
 		case "apply":
-			mockApply.VerifyWasCalledOnce().Run(ctx, nil, repoDir)
+			mockApply.VerifyWasCalledOnce().Run(ctx, nil, repoDir, expEnvs)
 		case "run":
-			mockRun.VerifyWasCalledOnce().Run(ctx, "", repoDir)
+			mockRun.VerifyWasCalledOnce().Run(ctx, "", repoDir, expEnvs)
 		}
 	}
 }
@@ -152,7 +162,7 @@ func TestDefaultProjectCommandRunner_ApplyNotApproved(t *testing.T) {
 	When(mockApproved.PullIsApproved(ctx.BaseRepo, ctx.Pull)).ThenReturn(false, nil)
 
 	res := runner.Apply(ctx)
-	Equals(t, "Pull request must be approved before running apply.", res.Failure)
+	Equals(t, "Pull request must be approved by at least one person other than the author before running apply.", res.Failure)
 }
 
 // Test that if mergeable is required and the PR isn't mergeable we give an error.
@@ -229,6 +239,11 @@ func TestDefaultProjectCommandRunner_Apply(t *testing.T) {
 			description: "workflow with custom apply stage",
 			steps: []valid.Step{
 				{
+					StepName:    "env",
+					EnvVarName:  "key",
+					EnvVarValue: "value",
+				},
+				{
 					StepName: "run",
 				},
 				{
@@ -241,18 +256,22 @@ func TestDefaultProjectCommandRunner_Apply(t *testing.T) {
 					StepName: "init",
 				},
 			},
-			expSteps: []string{"run", "apply", "plan", "init"},
+			expSteps: []string{"env", "run", "apply", "plan", "init"},
 			expOut:   "run\napply\nplan\ninit",
 		},
 	}
 
 	for _, c := range cases {
+		if c.description != "workflow with custom apply stage" {
+			continue
+		}
 		t.Run(c.description, func(t *testing.T) {
 			RegisterMockTestingT(t)
 			mockInit := mocks.NewMockStepRunner()
 			mockPlan := mocks.NewMockStepRunner()
 			mockApply := mocks.NewMockStepRunner()
 			mockRun := mocks.NewMockCustomStepRunner()
+			mockEnv := mocks.NewMockEnvStepRunner()
 			mockApproved := mocks2.NewMockPullApprovedChecker()
 			mockWorkingDir := mocks.NewMockWorkingDir()
 			mockLocker := mocks.NewMockProjectLocker()
@@ -265,6 +284,7 @@ func TestDefaultProjectCommandRunner_Apply(t *testing.T) {
 				PlanStepRunner:      mockPlan,
 				ApplyStepRunner:     mockApply,
 				RunStepRunner:       mockRun,
+				EnvStepRunner:       mockEnv,
 				PullApprovedChecker: mockApproved,
 				WorkingDir:          mockWorkingDir,
 				Webhooks:            mockSender,
@@ -286,10 +306,14 @@ func TestDefaultProjectCommandRunner_Apply(t *testing.T) {
 				RepoRelDir:        ".",
 				PullMergeable:     c.pullMergeable,
 			}
-			When(mockInit.Run(ctx, nil, repoDir)).ThenReturn("init", nil)
-			When(mockPlan.Run(ctx, nil, repoDir)).ThenReturn("plan", nil)
-			When(mockApply.Run(ctx, nil, repoDir)).ThenReturn("apply", nil)
-			When(mockRun.Run(ctx, "", repoDir)).ThenReturn("run", nil)
+			expEnvs := map[string]string{
+				"key": "value",
+			}
+			When(mockInit.Run(ctx, nil, repoDir, expEnvs)).ThenReturn("init", nil)
+			When(mockPlan.Run(ctx, nil, repoDir, expEnvs)).ThenReturn("plan", nil)
+			When(mockApply.Run(ctx, nil, repoDir, expEnvs)).ThenReturn("apply", nil)
+			When(mockRun.Run(ctx, "", repoDir, expEnvs)).ThenReturn("run", nil)
+			When(mockEnv.Run(ctx, "", "value", repoDir, make(map[string]string))).ThenReturn("value", nil)
 			When(mockApproved.PullIsApproved(ctx.BaseRepo, ctx.Pull)).ThenReturn(true, nil)
 
 			res := runner.Apply(ctx)
@@ -301,17 +325,111 @@ func TestDefaultProjectCommandRunner_Apply(t *testing.T) {
 				case "approved":
 					mockApproved.VerifyWasCalledOnce().PullIsApproved(ctx.BaseRepo, ctx.Pull)
 				case "init":
-					mockInit.VerifyWasCalledOnce().Run(ctx, nil, repoDir)
+					mockInit.VerifyWasCalledOnce().Run(ctx, nil, repoDir, expEnvs)
 				case "plan":
-					mockPlan.VerifyWasCalledOnce().Run(ctx, nil, repoDir)
+					mockPlan.VerifyWasCalledOnce().Run(ctx, nil, repoDir, expEnvs)
 				case "apply":
-					mockApply.VerifyWasCalledOnce().Run(ctx, nil, repoDir)
+					mockApply.VerifyWasCalledOnce().Run(ctx, nil, repoDir, expEnvs)
 				case "run":
-					mockRun.VerifyWasCalledOnce().Run(ctx, "", repoDir)
+					mockRun.VerifyWasCalledOnce().Run(ctx, "", repoDir, expEnvs)
+				case "env":
+					mockEnv.VerifyWasCalledOnce().Run(ctx, "", "value", repoDir, expEnvs)
 				}
 			}
 		})
 	}
+}
+
+// Test run and env steps. We don't use mocks for this test since we're
+// not running any Terraform.
+func TestDefaultProjectCommandRunner_RunEnvSteps(t *testing.T) {
+	RegisterMockTestingT(t)
+	tfClient := tmocks.NewMockClient()
+	tfVersion, err := version.NewVersion("0.12.0")
+	Ok(t, err)
+	run := runtime.RunStepRunner{
+		TerraformExecutor: tfClient,
+		DefaultTFVersion:  tfVersion,
+	}
+	env := runtime.EnvStepRunner{
+		RunStepRunner: &run,
+	}
+	mockWorkingDir := mocks.NewMockWorkingDir()
+	mockLocker := mocks.NewMockProjectLocker()
+
+	runner := events.DefaultProjectCommandRunner{
+		Locker:              mockLocker,
+		LockURLGenerator:    mockURLGenerator{},
+		RunStepRunner:       &run,
+		EnvStepRunner:       &env,
+		PullApprovedChecker: nil,
+		WorkingDir:          mockWorkingDir,
+		Webhooks:            nil,
+		WorkingDirLocker:    events.NewDefaultWorkingDirLocker(),
+	}
+
+	repoDir, cleanup := TempDir(t)
+	defer cleanup()
+	When(mockWorkingDir.Clone(
+		matchers.AnyPtrToLoggingSimpleLogger(),
+		matchers.AnyModelsRepo(),
+		matchers.AnyModelsPullRequest(),
+		AnyString(),
+	)).ThenReturn(repoDir, false, nil)
+	When(mockLocker.TryLock(
+		matchers.AnyPtrToLoggingSimpleLogger(),
+		matchers.AnyModelsPullRequest(),
+		matchers.AnyModelsUser(),
+		AnyString(),
+		matchers.AnyModelsProject(),
+	)).ThenReturn(&events.TryLockResponse{
+		LockAcquired: true,
+		LockKey:      "lock-key",
+	}, nil)
+
+	ctx := models.ProjectCommandContext{
+		Log: logging.NewNoopLogger(),
+		Steps: []valid.Step{
+			{
+				StepName:   "run",
+				RunCommand: "echo var=$var",
+			},
+			{
+				StepName:    "env",
+				EnvVarName:  "var",
+				EnvVarValue: "value",
+			},
+			{
+				StepName:   "run",
+				RunCommand: "echo var=$var",
+			},
+			{
+				StepName:   "env",
+				EnvVarName: "dynamic_var",
+				RunCommand: "echo dynamic_value",
+			},
+			{
+				StepName:   "run",
+				RunCommand: "echo dynamic_var=$dynamic_var",
+			},
+			// Test overriding the variable
+			{
+				StepName:    "env",
+				EnvVarName:  "dynamic_var",
+				EnvVarValue: "overridden",
+			},
+			{
+				StepName:   "run",
+				RunCommand: "echo dynamic_var=$dynamic_var",
+			},
+		},
+		Workspace:  "default",
+		RepoRelDir: ".",
+	}
+	res := runner.Plan(ctx)
+	Assert(t, res.PlanSuccess != nil, "exp plan success")
+	Equals(t, "https://lock-key", res.PlanSuccess.LockURL)
+	Equals(t, "var=\n\nvar=value\n\ndynamic_var=dynamic_value\n\ndynamic_var=overridden\n", res.PlanSuccess.TerraformOutput)
 }
 
 type mockURLGenerator struct{}

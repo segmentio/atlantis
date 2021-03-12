@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	version "github.com/hashicorp/go-version"
-	gitlab "github.com/lkysow/go-gitlab"
 	"github.com/runatlantis/atlantis/server/events/models"
+	gitlab "github.com/xanzy/go-gitlab"
 
 	. "github.com/runatlantis/atlantis/testing"
 )
@@ -139,20 +139,23 @@ func TestGitlabClient_MergePull(t *testing.T) {
 					case "/api/v4/projects/runatlantis%2Fatlantis/merge_requests/1/merge":
 						w.WriteHeader(c.code)
 						w.Write([]byte(c.glResponse)) // nolint: errcheck
+					case "/api/v4/":
+						// Rate limiter requests.
+						w.WriteHeader(http.StatusOK)
 					default:
 						t.Errorf("got unexpected request at %q", r.RequestURI)
 						http.Error(w, "not found", http.StatusNotFound)
 					}
 				}))
 
-			internalClient := gitlab.NewClient(nil, "token")
-			Ok(t, internalClient.SetBaseURL(testServer.URL))
+			internalClient, err := gitlab.NewClient("token", gitlab.WithBaseURL(testServer.URL))
+			Ok(t, err)
 			client := &GitlabClient{
 				Client:  internalClient,
 				Version: nil,
 			}
 
-			err := client.MergePull(models.PullRequest{
+			err = client.MergePull(models.PullRequest{
 				Num: 1,
 				BaseRepo: models.Repo{
 					FullName: "runatlantis/atlantis",
@@ -203,14 +206,17 @@ func TestGitlabClient_UpdateStatus(t *testing.T) {
 						Equals(t, exp, string(body))
 						defer r.Body.Close()  // nolint: errcheck
 						w.Write([]byte("{}")) // nolint: errcheck
+					case "/api/v4/":
+						// Rate limiter requests.
+						w.WriteHeader(http.StatusOK)
 					default:
 						t.Errorf("got unexpected request at %q", r.RequestURI)
 						http.Error(w, "not found", http.StatusNotFound)
 					}
 				}))
 
-			internalClient := gitlab.NewClient(nil, "token")
-			Ok(t, internalClient.SetBaseURL(testServer.URL))
+			internalClient, err := gitlab.NewClient("token", gitlab.WithBaseURL(testServer.URL))
+			Ok(t, err)
 			client := &GitlabClient{
 				Client:  internalClient,
 				Version: nil,
@@ -221,7 +227,7 @@ func TestGitlabClient_UpdateStatus(t *testing.T) {
 				Owner:    "runatlantis",
 				Name:     "atlantis",
 			}
-			err := client.UpdateStatus(repo, models.PullRequest{
+			err = client.UpdateStatus(repo, models.PullRequest{
 				Num:        1,
 				BaseRepo:   repo,
 				HeadCommit: "sha",
@@ -230,6 +236,17 @@ func TestGitlabClient_UpdateStatus(t *testing.T) {
 			Assert(t, gotRequest, "expected to get the request")
 		})
 	}
+}
+
+func TestGitlabClient_MarkdownPullLink(t *testing.T) {
+	gitlabClientUnderTest = true
+	defer func() { gitlabClientUnderTest = false }()
+	client, err := NewGitlabClient("gitlab.com", "token", nil)
+	Ok(t, err)
+	pull := models.PullRequest{Num: 1}
+	s, _ := client.MarkdownPullLink(pull)
+	exp := "!1"
+	Equals(t, exp, s)
 }
 
 var mergeSuccess = `{"id":22461274,"iid":13,"project_id":4580910,"title":"Update main.tf","description":"","state":"merged","created_at":"2019-01-15T18:27:29.375Z","updated_at":"2019-01-25T17:28:01.437Z","merged_by":{"id":1755902,"name":"Luke Kysow","username":"lkysow","state":"active","avatar_url":"https://secure.gravatar.com/avatar/25fd57e71590fe28736624ff24d41c5f?s=80\u0026d=identicon","web_url":"https://gitlab.com/lkysow"},"merged_at":"2019-01-25T17:28:01.459Z","closed_by":null,"closed_at":null,"target_branch":"patch-1","source_branch":"patch-1-merger","upvotes":0,"downvotes":0,"author":{"id":1755902,"name":"Luke Kysow","username":"lkysow","state":"active","avatar_url":"https://secure.gravatar.com/avatar/25fd57e71590fe28736624ff24d41c5f?s=80\u0026d=identicon","web_url":"https://gitlab.com/lkysow"},"assignee":null,"source_project_id":4580910,"target_project_id":4580910,"labels":[],"work_in_progress":false,"milestone":null,"merge_when_pipeline_succeeds":false,"merge_status":"can_be_merged","sha":"cb86d70f464632bdfbe1bb9bc0f2f9d847a774a0","merge_commit_sha":"c9b336f1c71d3e64810b8cfa2abcfab232d6bff6","user_notes_count":0,"discussion_locked":null,"should_remove_source_branch":null,"force_remove_source_branch":false,"web_url":"https://gitlab.com/lkysow/atlantis-example/merge_requests/13","time_stats":{"time_estimate":0,"total_time_spent":0,"human_time_estimate":null,"human_total_time_spent":null},"squash":false,"subscribed":true,"changes_count":"1","latest_build_started_at":null,"latest_build_finished_at":null,"first_deployed_to_production_at":null,"pipeline":null,"diff_refs":{"base_sha":"67cb91d3f6198189f433c045154a885784ba6977","head_sha":"cb86d70f464632bdfbe1bb9bc0f2f9d847a774a0","start_sha":"67cb91d3f6198189f433c045154a885784ba6977"},"merge_error":null,"approvals_before_merge":null}`

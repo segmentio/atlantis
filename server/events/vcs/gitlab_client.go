@@ -16,8 +16,11 @@ package vcs
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/runatlantis/atlantis/server/events/yaml"
 
 	"github.com/runatlantis/atlantis/server/events/vcs/common"
 
@@ -25,8 +28,8 @@ import (
 	"github.com/pkg/errors"
 	"github.com/runatlantis/atlantis/server/logging"
 
-	gitlab "github.com/lkysow/go-gitlab"
 	"github.com/runatlantis/atlantis/server/events/models"
+	gitlab "github.com/xanzy/go-gitlab"
 )
 
 type GitlabClient struct {
@@ -45,12 +48,16 @@ var gitlabClientUnderTest = false
 
 // NewGitlabClient returns a valid GitLab client.
 func NewGitlabClient(hostname string, token string, logger *logging.SimpleLogger) (*GitlabClient, error) {
-	client := &GitlabClient{
-		Client: gitlab.NewClient(nil, token),
-	}
+	client := &GitlabClient{}
 
-	// If not using gitlab.com we need to set the URL to the API.
-	if hostname != "gitlab.com" {
+	// Create the client differently depending on the base URL.
+	if hostname == "gitlab.com" {
+		glClient, err := gitlab.NewClient(token)
+		if err != nil {
+			return nil, err
+		}
+		client.Client = glClient
+	} else {
 		// We assume the url will be over HTTPS if the user doesn't specify a scheme.
 		absoluteURL := hostname
 		if !strings.HasPrefix(hostname, "http://") && !strings.HasPrefix(hostname, "https://") {
@@ -74,9 +81,11 @@ func NewGitlabClient(hostname string, token string, logger *logging.SimpleLogger
 		// Now we're ready to construct the client.
 		absoluteURL = strings.TrimSuffix(absoluteURL, "/")
 		apiURL := fmt.Sprintf("%s/api/v4/", absoluteURL)
-		if err := client.Client.SetBaseURL(apiURL); err != nil {
-			return nil, errors.Wrapf(err, "setting GitLab API URL: %s", apiURL)
+		glClient, err := gitlab.NewClient(token, gitlab.WithBaseURL(apiURL))
+		if err != nil {
+			return nil, err
 		}
+		client.Client = glClient
 	}
 
 	// Determine which version of GitLab is running.
@@ -92,8 +101,8 @@ func NewGitlabClient(hostname string, token string, logger *logging.SimpleLogger
 	return client, nil
 }
 
-// GetModifiedFiles returns the names of files that were modified in the merge request.
-// The names include the path to the file from the repo root, ex. parent/child/file.txt.
+// GetModifiedFiles returns the names of files that were modified in the merge request
+// relative to the repo root, e.g. parent/child/file.txt.
 func (g *GitlabClient) GetModifiedFiles(repo models.Repo, pull models.PullRequest) ([]string, error) {
 	const maxPerPage = 100
 	var files []string
@@ -134,9 +143,13 @@ func (g *GitlabClient) GetModifiedFiles(repo models.Repo, pull models.PullReques
 }
 
 // CreateComment creates a comment on the merge request.
-func (g *GitlabClient) CreateComment(repo models.Repo, pullNum int, comment string) error {
+func (g *GitlabClient) CreateComment(repo models.Repo, pullNum int, comment string, command string) error {
 	_, _, err := g.Client.Notes.CreateMergeRequestNote(repo.FullName, pullNum, &gitlab.CreateMergeRequestNoteOptions{Body: gitlab.String(comment)})
 	return err
+}
+
+func (g *GitlabClient) HidePrevPlanComments(repo models.Repo, pullNum int) error {
+	return nil
 }
 
 // PullIsApproved returns true if the merge request was approved.
@@ -165,7 +178,7 @@ func (g *GitlabClient) PullIsApproved(repo models.Repo, pull models.PullRequest)
 // - https://gitlab.com/gitlab-org/gitlab-ee/issues/3169
 // - https://gitlab.com/gitlab-org/gitlab-ce/issues/42344
 func (g *GitlabClient) PullIsMergeable(repo models.Repo, pull models.PullRequest) (bool, error) {
-	mr, _, err := g.Client.MergeRequests.GetMergeRequest(repo.FullName, pull.Num)
+	mr, _, err := g.Client.MergeRequests.GetMergeRequest(repo.FullName, pull.Num, nil)
 	if err != nil {
 		return false, err
 	}
@@ -196,7 +209,7 @@ func (g *GitlabClient) UpdateStatus(repo models.Repo, pull models.PullRequest, s
 }
 
 func (g *GitlabClient) GetMergeRequest(repoFullName string, pullNum int) (*gitlab.MergeRequest, error) {
-	mr, _, err := g.Client.MergeRequests.GetMergeRequest(repoFullName, pullNum)
+	mr, _, err := g.Client.MergeRequests.GetMergeRequest(repoFullName, pullNum, nil)
 	return mr, err
 }
 
@@ -210,6 +223,11 @@ func (g *GitlabClient) MergePull(pull models.PullRequest) error {
 			MergeCommitMessage: &commitMsg,
 		})
 	return errors.Wrap(err, "unable to merge merge request, it may not be in a mergeable state")
+}
+
+// MarkdownPullLink specifies the string used in a pull request comment to reference another pull request.
+func (g *GitlabClient) MarkdownPullLink(pull models.PullRequest) (string, error) {
+	return fmt.Sprintf("!%d", pull.Num), nil
 }
 
 // GetVersion returns the version of the Gitlab server this client is using.
@@ -253,4 +271,26 @@ func MustConstraint(constraint string) version.Constraints {
 		panic(err)
 	}
 	return c
+}
+
+// DownloadRepoConfigFile return `atlantis.yaml` content from VCS (which support fetch a single file from repository)
+// The first return value indicate that repo contain atlantis.yaml or not
+// if BaseRepo had one repo config file, its content will placed on the second return value
+func (g *GitlabClient) DownloadRepoConfigFile(pull models.PullRequest) (bool, []byte, error) {
+	opt := gitlab.GetRawFileOptions{Ref: gitlab.String(pull.HeadBranch)}
+
+	bytes, resp, err := g.Client.RepositoryFiles.GetRawFile(pull.BaseRepo.FullName, yaml.AtlantisYAMLFilename, &opt)
+	if resp.StatusCode == http.StatusNotFound {
+		return false, []byte{}, nil
+	}
+
+	if err != nil {
+		return true, []byte{}, err
+	}
+
+	return true, bytes, nil
+}
+
+func (g *GitlabClient) SupportsSingleFileDownload(repo models.Repo) bool {
+	return true
 }

@@ -36,14 +36,6 @@ func (p Project) Validate() error {
 		return nil
 	}
 
-	validTFVersion := func(value interface{}) error {
-		strPtr := value.(*string)
-		if strPtr == nil {
-			return nil
-		}
-		_, err := version.NewVersion(*strPtr)
-		return errors.Wrapf(err, "version %q could not be parsed", *strPtr)
-	}
 	validName := func(value interface{}) error {
 		strPtr := value.(*string)
 		if strPtr == nil {
@@ -60,17 +52,17 @@ func (p Project) Validate() error {
 	return validation.ValidateStruct(&p,
 		validation.Field(&p.Dir, validation.Required, validation.By(hasDotDot)),
 		validation.Field(&p.ApplyRequirements, validation.By(validApplyReq)),
-		validation.Field(&p.TerraformVersion, validation.By(validTFVersion)),
+		validation.Field(&p.TerraformVersion, validation.By(VersionValidator)),
 		validation.Field(&p.Name, validation.By(validName)),
 	)
 }
 
 func (p Project) ToValid() valid.Project {
 	var v valid.Project
-	cleanedDir := filepath.Clean(*p.Dir)
-	if cleanedDir == "/" {
-		cleanedDir = "."
-	}
+	// Prepend ./ and then run .Clean() so we're guaranteed to have a relative
+	// directory. This is necessary because we use this dir without sanitation
+	// in DefaultProjectFinder.
+	cleanedDir := filepath.Clean("./" + *p.Dir)
 	v.Dir = cleanedDir
 
 	if p.Workspace == nil || *p.Workspace == "" {

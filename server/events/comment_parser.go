@@ -14,12 +14,14 @@
 package events
 
 import (
+	"bytes"
 	"fmt"
 	"io/ioutil"
 	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"text/template"
 
 	"github.com/flynn-archive/go-shlex"
 	"github.com/runatlantis/atlantis/server/events/models"
@@ -65,9 +67,11 @@ type CommentBuilder interface {
 
 // CommentParser implements CommentParsing
 type CommentParser struct {
-	GithubUser    string
-	GitlabUser    string
-	BitbucketUser string
+	GithubUser      string
+	GitlabUser      string
+	BitbucketUser   string
+	AzureDevopsUser string
+	ApplyDisabled   bool
 }
 
 // CommentParseResult describes the result of parsing a comment as a command.
@@ -87,7 +91,7 @@ type CommentParseResult struct {
 // Valid commands contain:
 // - The initial "executable" name, 'run' or 'atlantis' or '@GithubUser'
 //   where GithubUser is the API user Atlantis is running as.
-// - Then a command, either 'plan', 'apply', or 'help'.
+// - Then a command, either 'plan', 'apply', 'approve_policies', or 'help'.
 // - Then optional flags, then an optional separator '--' followed by optional
 //   extra flags to be appended to the terraform plan/apply command.
 //
@@ -97,6 +101,7 @@ type CommentParseResult struct {
 // - @GithubUser plan -w staging
 // - atlantis plan -w staging -d dir --verbose
 // - atlantis plan --verbose -- -key=value -key2 value2
+// - atlantis approve_policies
 //
 func (e *CommentParser) Parse(comment string, vcsHost models.VCSHostType) CommentParseResult {
 	if multiLineRegex.MatchString(comment) {
@@ -125,6 +130,8 @@ func (e *CommentParser) Parse(comment string, vcsHost models.VCSHostType) Commen
 		vcsUser = e.GitlabUser
 	case models.BitbucketCloud, models.BitbucketServer:
 		vcsUser = e.BitbucketUser
+	case models.AzureDevops:
+		vcsUser = e.AzureDevopsUser
 	}
 	executableNames := []string{"run", atlantisExecutable, "@" + vcsUser}
 	if !e.stringInSlice(args[0], executableNames) {
@@ -144,17 +151,17 @@ func (e *CommentParser) Parse(comment string, vcsHost models.VCSHostType) Commen
 	// If they've just typed the name of the executable then give them the help
 	// output.
 	if len(args) == 1 {
-		return CommentParseResult{CommentResponse: HelpComment}
+		return CommentParseResult{CommentResponse: e.HelpComment(e.ApplyDisabled)}
 	}
 	command := args[1]
 
 	// Help output.
 	if e.stringInSlice(command, []string{"help", "-h", "--help"}) {
-		return CommentParseResult{CommentResponse: HelpComment}
+		return CommentParseResult{CommentResponse: e.HelpComment(e.ApplyDisabled)}
 	}
 
-	// Need to have a plan or apply at this point.
-	if !e.stringInSlice(command, []string{models.PlanCommand.String(), models.ApplyCommand.String()}) {
+	// Need to have a plan, apply, approve_policy or unlock at this point.
+	if !e.stringInSlice(command, []string{models.PlanCommand.String(), models.ApplyCommand.String(), models.UnlockCommand.String(), models.ApprovePoliciesCommand.String()}) {
 		return CommentParseResult{CommentResponse: fmt.Sprintf("```\nError: unknown command %q.\nRun 'atlantis --help' for usage.\n```", command)}
 	}
 
@@ -183,6 +190,15 @@ func (e *CommentParser) Parse(comment string, vcsHost models.VCSHostType) Commen
 		flagSet.StringVarP(&dir, dirFlagLong, dirFlagShort, "", "Apply the plan for this directory, relative to root of repo, ex. 'child/dir'.")
 		flagSet.StringVarP(&project, projectFlagLong, projectFlagShort, "", fmt.Sprintf("Apply the plan for this project. Refers to the name of the project configured in %s. Cannot be used at same time as workspace or dir flags.", yaml.AtlantisYAMLFilename))
 		flagSet.BoolVarP(&verbose, verboseFlagLong, verboseFlagShort, false, "Append Atlantis log to comment.")
+	case models.ApprovePoliciesCommand.String():
+		name = models.ApprovePoliciesCommand
+		flagSet = pflag.NewFlagSet(models.ApprovePoliciesCommand.String(), pflag.ContinueOnError)
+		flagSet.SetOutput(ioutil.Discard)
+		flagSet.BoolVarP(&verbose, verboseFlagLong, verboseFlagShort, false, "Append Atlantis log to comment.")
+	case models.UnlockCommand.String():
+		name = models.UnlockCommand
+		flagSet = pflag.NewFlagSet(models.UnlockCommand.String(), pflag.ContinueOnError)
+		flagSet.SetOutput(ioutil.Discard)
 	default:
 		return CommentParseResult{CommentResponse: fmt.Sprintf("Error: unknown command %q – this is a bug", command)}
 	}
@@ -194,6 +210,9 @@ func (e *CommentParser) Parse(comment string, vcsHost models.VCSHostType) Commen
 		return CommentParseResult{CommentResponse: fmt.Sprintf("```\nUsage of %s:\n%s\n```", command, flagSet.FlagUsagesWrapped(usagesCols))}
 	}
 	if err != nil {
+		if command == models.UnlockCommand.String() {
+			return CommentParseResult{CommentResponse: UnlockUsage}
+		}
 		return CommentParseResult{CommentResponse: e.errMarkdown(err.Error(), command, flagSet)}
 	}
 
@@ -319,9 +338,21 @@ func (e *CommentParser) errMarkdown(errMsg string, command string, flagSet *pfla
 	return fmt.Sprintf("```\nError: %s.\nUsage of %s:\n%s```", errMsg, command, flagSet.FlagUsagesWrapped(usagesCols))
 }
 
-// HelpComment is the comment we add to the pull request when someone runs
-// `atlantis help`.
-var HelpComment = "```cmake\n" +
+func (e *CommentParser) HelpComment(applyDisabled bool) string {
+	buf := &bytes.Buffer{}
+	var tmpl = template.Must(template.New("").Parse(helpCommentTemplate))
+	if err := tmpl.Execute(buf, struct {
+		ApplyDisabled bool
+	}{
+		ApplyDisabled: applyDisabled,
+	}); err != nil {
+		return fmt.Sprintf("Failed to render template, this is a bug: %v", err)
+	}
+	return buf.String()
+
+}
+
+var helpCommentTemplate = "```cmake\n" +
 	`atlantis
 Terraform Pull Request Automation
 
@@ -331,19 +362,25 @@ Usage:
 Examples:
   # run plan in the root directory passing the -target flag to terraform
   atlantis plan -d . -- -target=resource
+  {{- if not .ApplyDisabled }}
 
   # apply all unapplied plans from this pull request
   atlantis apply
 
   # apply the plan for the root directory and staging workspace
   atlantis apply -d . -w staging
+{{- end }}
 
 Commands:
-  plan   Runs 'terraform plan' for the changes in this pull request.
-         To plan a specific project, use the -d, -w and -p flags.
-  apply  Runs 'terraform apply' on all unapplied plans from this pull request.
-         To only apply a specific plan, use the -d, -w and -p flags.
-  help   View help.
+  plan     Runs 'terraform plan' for the changes in this pull request.
+           To plan a specific project, use the -d, -w and -p flags.
+{{- if not .ApplyDisabled }}
+  apply    Runs 'terraform apply' on all unapplied plans from this pull request.
+           To only apply a specific plan, use the -d, -w and -p flags.
+{{- end }}
+  unlock   Removes all atlantis locks and discards all plans for this PR.
+           To unlock a specific plan you can use the Atlantis UI.
+  help     View help.
 
 Flags:
   -h, --help   help for atlantis
@@ -354,3 +391,14 @@ Use "atlantis [command] --help" for more information about a command.` +
 // DidYouMeanAtlantisComment is the comment we add to the pull request when
 // someone runs a command with terraform instead of atlantis.
 var DidYouMeanAtlantisComment = "Did you mean to use `atlantis` instead of `terraform`?"
+
+// UnlockUsage is the comment we add to the pull request when someone runs
+// `atlantis unlock` with flags.
+
+var UnlockUsage = "`Usage of unlock:`\n\n ```cmake\n" +
+	`atlantis unlock	
+
+  Unlocks the entire PR and discards all plans in this PR.
+  Arguments or flags are not supported at the moment.
+  If you need to unlock a specific project please use the atlantis UI.` +
+	"\n```"

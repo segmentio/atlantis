@@ -1,12 +1,18 @@
 package runtime_test
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
 	version "github.com/hashicorp/go-version"
+	. "github.com/petergtz/pegomock"
+	"github.com/runatlantis/atlantis/server/events/mocks/matchers"
 	"github.com/runatlantis/atlantis/server/events/models"
 	"github.com/runatlantis/atlantis/server/events/runtime"
+	"github.com/runatlantis/atlantis/server/events/terraform/mocks"
+	matchers2 "github.com/runatlantis/atlantis/server/events/terraform/mocks/matchers"
 	"github.com/runatlantis/atlantis/server/logging"
 	. "github.com/runatlantis/atlantis/testing"
 )
@@ -17,14 +23,17 @@ func TestRunStepRunner_Run(t *testing.T) {
 		ProjectName string
 		ExpOut      string
 		ExpErr      string
+		Version     string
 	}{
 		{
 			Command: "",
 			ExpOut:  "",
+			Version: "v1.2.3",
 		},
 		{
 			Command: "echo hi",
 			ExpOut:  "hi\n",
+			Version: "v2.3.4",
 		},
 		{
 			Command: `printf \'your main.tf file does not provide default region.\\ncheck\'`,
@@ -56,12 +65,15 @@ func TestRunStepRunner_Run(t *testing.T) {
 			ExpOut:      "workspace=myworkspace version=0.11.0 dir=$DIR planfile=$DIR/my::project::name-myworkspace.tfplan project=my/project/name\n",
 		},
 		{
-			Command: "echo base_repo_name=$BASE_REPO_NAME base_repo_owner=$BASE_REPO_OWNER head_repo_name=$HEAD_REPO_NAME head_repo_owner=$HEAD_REPO_OWNER head_branch_name=$HEAD_BRANCH_NAME base_branch_name=$BASE_BRANCH_NAME pull_num=$PULL_NUM pull_author=$PULL_AUTHOR",
-			ExpOut:  "base_repo_name=basename base_repo_owner=baseowner head_repo_name=headname head_repo_owner=headowner head_branch_name=add-feat base_branch_name=master pull_num=2 pull_author=acme\n",
+			Command: "echo base_repo_name=$BASE_REPO_NAME base_repo_owner=$BASE_REPO_OWNER head_repo_name=$HEAD_REPO_NAME head_repo_owner=$HEAD_REPO_OWNER head_branch_name=$HEAD_BRANCH_NAME base_branch_name=$BASE_BRANCH_NAME pull_num=$PULL_NUM pull_author=$PULL_AUTHOR repo_rel_dir=$REPO_REL_DIR",
+			ExpOut:  "base_repo_name=basename base_repo_owner=baseowner head_repo_name=headname head_repo_owner=headowner head_branch_name=add-feat base_branch_name=master pull_num=2 pull_author=acme repo_rel_dir=mydir\n",
 		},
 		{
 			Command: "echo user_name=$USER_NAME",
 			ExpOut:  "user_name=acme-user\n",
+		}, {
+			Command: "echo $PATH",
+			ExpOut:  fmt.Sprintf("%s:%s\n", os.Getenv("PATH"), "/bin/dir"),
 		},
 		{
 			Command: "echo args=$COMMENT_ARGS",
@@ -69,13 +81,34 @@ func TestRunStepRunner_Run(t *testing.T) {
 		},
 	}
 
-	projVersion, err := version.NewVersion("v0.11.0")
-	Ok(t, err)
-	defaultVersion, _ := version.NewVersion("0.8")
-	r := runtime.RunStepRunner{
-		DefaultTFVersion: defaultVersion,
-	}
 	for _, c := range cases {
+
+		var projVersion *version.Version
+		var err error
+
+		projVersion, err = version.NewVersion("v0.11.0")
+
+		if c.Version != "" {
+			projVersion, err = version.NewVersion(c.Version)
+			Ok(t, err)
+		}
+
+		Ok(t, err)
+
+		defaultVersion, _ := version.NewVersion("0.8")
+
+		RegisterMockTestingT(t)
+		terraform := mocks.NewMockClient()
+		When(terraform.EnsureVersion(matchers.AnyPtrToLoggingSimpleLogger(), matchers2.AnyPtrToGoVersionVersion())).
+			ThenReturn(nil)
+
+		logger := logging.NewNoopLogger()
+
+		r := runtime.RunStepRunner{
+			TerraformExecutor: terraform,
+			DefaultTFVersion:  defaultVersion,
+			TerraformBinDir:   "/bin/dir",
+		}
 		t.Run(c.Command, func(t *testing.T) {
 			tmpDir, cleanup := TempDir(t)
 			defer cleanup()
@@ -97,14 +130,14 @@ func TestRunStepRunner_Run(t *testing.T) {
 				User: models.User{
 					Username: "acme-user",
 				},
-				Log:                logging.NewNoopLogger(),
+				Log:                logger,
 				Workspace:          "myworkspace",
 				RepoRelDir:         "mydir",
 				TerraformVersion:   projVersion,
 				ProjectName:        c.ProjectName,
 				EscapedCommentArgs: []string{"-target=resource1", "-target=resource2"},
 			}
-			out, err := r.Run(ctx, c.Command, tmpDir)
+			out, err := r.Run(ctx, c.Command, tmpDir, map[string]string{"test": "var"})
 			if c.ExpErr != "" {
 				ErrContains(t, c.ExpErr, err)
 				return
@@ -115,6 +148,10 @@ func TestRunStepRunner_Run(t *testing.T) {
 			// temp dir.
 			expOut := strings.Replace(c.ExpOut, "$DIR", tmpDir, -1)
 			Equals(t, expOut, out)
+
+			terraform.VerifyWasCalledOnce().EnsureVersion(logger, projVersion)
+			terraform.VerifyWasCalled(Never()).EnsureVersion(logger, defaultVersion)
+
 		})
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/runatlantis/atlantis/server/events/models"
+	"github.com/runatlantis/atlantis/server/events/vcs"
 	. "github.com/runatlantis/atlantis/testing"
 )
 
@@ -34,12 +35,17 @@ func TestNewRepo_EmptyCloneURL(t *testing.T) {
 
 func TestNewRepo_InvalidCloneURL(t *testing.T) {
 	_, err := models.NewRepo(models.Github, "owner/repo", ":", "u", "p")
-	ErrEquals(t, "invalid clone url: parse :.git: missing protocol scheme", err)
+	ErrEquals(t, "invalid clone url: parse \":.git\": missing protocol scheme", err)
 }
 
 func TestNewRepo_CloneURLWrongRepo(t *testing.T) {
 	_, err := models.NewRepo(models.Github, "owner/repo", "https://github.com/notowner/repo.git", "u", "p")
 	ErrEquals(t, `expected clone url to have path "/owner/repo.git" but had "/notowner/repo.git"`, err)
+}
+
+func TestNewRepo_EmptyAzureDevopsProject(t *testing.T) {
+	_, err := models.NewRepo(models.AzureDevops, "", "https://dev.azure.com/notowner/project/_git/repo", "u", "p")
+	ErrEquals(t, "repoFullName can't be empty", err)
 }
 
 // For bitbucket server we don't validate the clone URL because the callers
@@ -58,6 +64,19 @@ func TestNewRepo_CloneURLBitbucketServer(t *testing.T) {
 			Type:     models.BitbucketServer,
 		},
 	}, repo)
+}
+
+// If the clone URL contains a space, NewRepo() should encode it
+func TestNewRepo_CloneURLContainsSpace(t *testing.T) {
+	repo, err := models.NewRepo(models.AzureDevops, "owner/project space/repo", "https://dev.azure.com/owner/project space/repo", "u", "p")
+	Ok(t, err)
+	Equals(t, repo.CloneURL, "https://u:p@dev.azure.com/owner/project%20space/repo")
+	Equals(t, repo.SanitizedCloneURL, "https://u:<redacted>@dev.azure.com/owner/project%20space/repo")
+
+	repo, err = models.NewRepo(models.BitbucketCloud, "owner/repo space", "https://bitbucket.org/owner/repo space", "u", "p")
+	Ok(t, err)
+	Equals(t, repo.CloneURL, "https://u:p@bitbucket.org/owner/repo%20space.git")
+	Equals(t, repo.SanitizedCloneURL, "https://u:<redacted>@bitbucket.org/owner/repo%20space.git")
 }
 
 func TestNewRepo_FullNameWrongFormat(t *testing.T) {
@@ -99,7 +118,7 @@ func TestNewRepo_FullNameWrongFormat(t *testing.T) {
 	}
 }
 
-// If the clone url doesn't end with .git it is appended
+// If the clone url doesn't end with .git, and VCS is not Azure DevOps, it is appended
 func TestNewRepo_MissingDotGit(t *testing.T) {
 	repo, err := models.NewRepo(models.BitbucketCloud, "owner/repo", "https://bitbucket.org/owner/repo", "u", "p")
 	Ok(t, err)
@@ -196,6 +215,10 @@ func TestVCSHostType_ToString(t *testing.T) {
 			models.BitbucketServer,
 			"BitbucketServer",
 		},
+		{
+			models.AzureDevops,
+			"AzureDevops",
+		},
 	}
 
 	for _, c := range cases {
@@ -257,6 +280,82 @@ func TestSplitRepoFullName(t *testing.T) {
 	}
 }
 
+// These test cases should cover the same behavior as TestSplitRepoFullName
+// and only produce different output in the AzureDevops case of
+// owner/project/repo.
+func TestAzureDevopsSplitRepoFullName(t *testing.T) {
+	cases := []struct {
+		input      string
+		expOwner   string
+		expRepo    string
+		expProject string
+	}{
+		{
+			"owner/repo",
+			"owner",
+			"repo",
+			"",
+		},
+		{
+			"group/subgroup/owner/repo",
+			"group/subgroup/owner",
+			"repo",
+			"",
+		},
+		{
+			"group/subgroup/owner/project/repo",
+			"group/subgroup/owner/project",
+			"repo",
+			"",
+		},
+		{
+			"",
+			"",
+			"",
+			"",
+		},
+		{
+			"/",
+			"",
+			"",
+			"",
+		},
+		{
+			"owner/",
+			"",
+			"",
+			"",
+		},
+		{
+			"/repo",
+			"",
+			"repo",
+			"",
+		},
+		{
+			"group/subgroup/",
+			"",
+			"",
+			"",
+		},
+		{
+			"owner/project/repo",
+			"owner",
+			"repo",
+			"project",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.input, func(t *testing.T) {
+			owner, project, repo := vcs.SplitAzureDevopsRepoFullName(c.input)
+			Equals(t, c.expOwner, owner)
+			Equals(t, c.expProject, project)
+			Equals(t, c.expRepo, repo)
+		})
+	}
+}
+
 func TestProjectResult_IsSuccessful(t *testing.T) {
 	cases := map[string]struct {
 		pr  models.ProjectResult
@@ -265,6 +364,12 @@ func TestProjectResult_IsSuccessful(t *testing.T) {
 		"plan success": {
 			models.ProjectResult{
 				PlanSuccess: &models.PlanSuccess{},
+			},
+			true,
+		},
+		"policy_check success": {
+			models.ProjectResult{
+				PolicyCheckSuccess: &models.PolicyCheckSuccess{},
 			},
 			true,
 		},
@@ -342,6 +447,34 @@ func TestProjectResult_PlanStatus(t *testing.T) {
 			},
 			expStatus: models.AppliedPlanStatus,
 		},
+		{
+			p: models.ProjectResult{
+				Command:            models.PolicyCheckCommand,
+				PolicyCheckSuccess: &models.PolicyCheckSuccess{},
+			},
+			expStatus: models.PassedPolicyCheckStatus,
+		},
+		{
+			p: models.ProjectResult{
+				Command: models.PolicyCheckCommand,
+				Failure: "failure",
+			},
+			expStatus: models.ErroredPolicyCheckStatus,
+		},
+		{
+			p: models.ProjectResult{
+				Command:            models.ApprovePoliciesCommand,
+				PolicyCheckSuccess: &models.PolicyCheckSuccess{},
+			},
+			expStatus: models.PassedPolicyCheckStatus,
+		},
+		{
+			p: models.ProjectResult{
+				Command: models.ApprovePoliciesCommand,
+				Failure: "failure",
+			},
+			expStatus: models.ErroredPolicyCheckStatus,
+		},
 	}
 
 	for _, c := range cases {
@@ -366,6 +499,15 @@ func TestPullStatus_StatusCount(t *testing.T) {
 			{
 				Status: models.ErroredApplyStatus,
 			},
+			{
+				Status: models.DiscardedPlanStatus,
+			},
+			{
+				Status: models.ErroredPolicyCheckStatus,
+			},
+			{
+				Status: models.PassedPolicyCheckStatus,
+			},
 		},
 	}
 
@@ -373,4 +515,31 @@ func TestPullStatus_StatusCount(t *testing.T) {
 	Equals(t, 1, ps.StatusCount(models.AppliedPlanStatus))
 	Equals(t, 1, ps.StatusCount(models.ErroredApplyStatus))
 	Equals(t, 0, ps.StatusCount(models.ErroredPlanStatus))
+	Equals(t, 1, ps.StatusCount(models.DiscardedPlanStatus))
+	Equals(t, 1, ps.StatusCount(models.ErroredPolicyCheckStatus))
+	Equals(t, 1, ps.StatusCount(models.PassedPolicyCheckStatus))
+}
+
+func TestApplyCommand_String(t *testing.T) {
+	uc := models.ApplyCommand
+
+	Equals(t, "apply", uc.String())
+}
+
+func TestPlanCommand_String(t *testing.T) {
+	uc := models.PlanCommand
+
+	Equals(t, "plan", uc.String())
+}
+
+func TestPolicyCheckCommand_String(t *testing.T) {
+	uc := models.PolicyCheckCommand
+
+	Equals(t, "policy_check", uc.String())
+}
+
+func TestUnlockCommand_String(t *testing.T) {
+	uc := models.UnlockCommand
+
+	Equals(t, "unlock", uc.String())
 }
